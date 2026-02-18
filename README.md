@@ -28,12 +28,25 @@ poetry run alembic upgrade head
 
 By default the Postgres service exposes `postgresql://qe:qe@localhost:5433/qe`. You can
 override this by setting the standard `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, and
-`PGDATABASE` environment variables or by exporting a `DATABASE_DSN` connection string.
+`PGDATABASE` environment variables.
 
 - `scripts/ingest_job_descriptions.py` now stores the chunk cache and ingest manifest in
   Postgres tables managed via Alembic migrations.
-- Alembic can also point to a remote database by setting `DATABASE_URL` before running
-  `alembic upgrade`.
+
+### Environment variables
+
+| Variable           | Required       | Used by                             | Purpose / default                                                  |
+| ------------------ | -------------- | ----------------------------------- | ------------------------------------------------------------------ |
+| `SOCLE_IA_API_KEY` | ✅              | ingestion, assignment, test scripts | Socle IA API key for embeddings + LLM chunking.                    |
+| `ALBERT_API_KEY`   | ✅ (assignment) | assignment                          | Albert rerank API key.                                             |
+| `LLM_BASE_URL`     | ✅ (ingestion)  | ingestion                           | Base URL for Socle IA API (embeddings + chat). No default in code. |
+| `LLM_MODEL`        | ✅ (ingestion)  | ingestion                           | Model name for LLM chunking. No default in code.                   |
+| `EMBEDDING_MODEL`  | ✅ (ingestion)  | ingestion                           | Embedding model name. No default in code.                          |
+| `PGHOST`           | ❌              | ingestion                           | Postgres host (default: `localhost`).                              |
+| `PGPORT`           | ❌              | ingestion                           | Postgres port (default: `5433`).                                   |
+| `PGUSER`           | ❌              | ingestion                           | Postgres user (default: `qe`).                                     |
+| `PGPASSWORD`       | ❌              | ingestion                           | Postgres password (default: `qe`).                                 |
+| `PGDATABASE`       | ❌              | ingestion                           | Postgres database (default: `qe`).                                 |
 
 ### Chunk-aware ingestion
 
@@ -55,12 +68,6 @@ embedding:
 
 ### Running the ingestion script
 ```bash
-export SOCLE_IA_API_KEY=...      # required
-export PGHOST=localhost          # optional overrides
-export PGPORT=5433
-export PGUSER=qe
-export PGPASSWORD=qe
-export PGDATABASE=qe
 python scripts/ingest_job_descriptions.py \\
   --input-dir data/job_descriptions \\
   --collection job_descriptions \\
@@ -111,7 +118,7 @@ make manual review easier.
 If you want to wipe the job-description collection and start fresh:
 
 ```bash
-python scripts/reset_qdrant.py \
+python scripts/reset_dbs.py \
   --collection job_descriptions \
   --qdrant-url http://localhost:6333 \
   --input-dir data/job_descriptions
