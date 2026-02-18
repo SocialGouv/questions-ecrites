@@ -9,9 +9,6 @@ from psycopg.types.json import Json
 
 
 def _connection_kwargs() -> dict:
-    url = os.getenv("DATABASE_DSN")
-    if url:
-        return {"conninfo": url}
     host = os.getenv("PGHOST", "localhost")
     port = int(os.getenv("PGPORT", "5433"))
     user = os.getenv("PGUSER", "qe")
@@ -116,3 +113,59 @@ def delete_chunk_cache(strategy: str, document_hash: str) -> None:
                 "DELETE FROM chunk_cache WHERE strategy = %s AND document_hash = %s",
                 (strategy, document_hash),
             )
+
+
+def get_manifest_entries_under_prefix(path_prefix: str) -> dict[str, str]:
+    """Return manifest entries whose path starts with the given prefix.
+
+    Notes:
+      - `ingest_manifest.path` stores whatever string was passed by the ingest script.
+        In practice it is the stringified `Path` (often relative to repo root).
+      - We do a simple SQL prefix match here (`LIKE prefix%`). Callers should ensure
+        the prefix format matches the stored path format they want to target.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT path, document_hash
+                FROM ingest_manifest
+                WHERE path LIKE %s
+                """,
+                (f"{path_prefix}%",),
+            )
+            rows = cur.fetchall()
+            return {row[0]: row[1] for row in rows}
+
+
+def delete_manifest_under_prefix(path_prefix: str) -> int:
+    """Delete manifest rows whose path starts with the given prefix.
+
+    Returns the number of deleted rows.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM ingest_manifest WHERE path LIKE %s",
+                (f"{path_prefix}%",),
+            )
+            return cur.rowcount
+
+
+def delete_chunk_cache_for_document_hashes(document_hashes: Sequence[str]) -> int:
+    """Delete chunk_cache rows for the provided document hashes.
+
+    This removes cache entries for *all* strategies for those documents.
+    Returns the number of deleted rows.
+    """
+    hashes = list(dict.fromkeys(document_hashes))
+    if not hashes:
+        return 0
+
+    # Use `= ANY(%s)` to avoid string-building an `IN (...)` clause.
+    # psycopg will adapt the Python list into a Postgres array.
+    sql = "DELETE FROM chunk_cache WHERE document_hash = ANY(%s)"
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (hashes,))
+            return cur.rowcount
