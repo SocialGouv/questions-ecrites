@@ -1,4 +1,3 @@
-import os
 from logging.config import fileConfig
 from typing import Any
 
@@ -28,9 +27,6 @@ target_metadata = None
 
 
 def _get_url() -> str:
-    url = os.getenv("DATABASE_URL")
-    if url:
-        return url
     url = config.get_main_option("sqlalchemy.url")
     if not url:
         raise ValueError("Database URL is not set")
