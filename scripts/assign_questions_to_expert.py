@@ -5,29 +5,24 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
 
-import requests
-
-from scripts.ingest_job_descriptions import (  # type: ignore
-    EmbeddingClient,
-    load_documents,
-    read_document,
-)
+from qe.clients.llm import SocleLLMClient
+from qe.clients.embedding import EmbeddingClient
+from qe.clients.qdrant import QdrantClient
+from qe.clients.rerank import RerankClient
+from qe.config import get_settings, require_api_key
+from qe.documents import load_documents, read_document
+from qe.llm_duties import LLMQuestionDutyExtractor
 
 DEFAULT_INPUT_DIR = Path("data/qe_no_answers")
 DEFAULT_COLLECTION = "job_descriptions"
 DEFAULT_QDRANT_URL = "http://localhost:6333"
-DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
-DEFAULT_EMBEDDING_BASE_URL = (
-    "https://pliage-prod.socle-ia.data-ia.prod.atlas.fabrique.social.gouv.fr"
-)
 DEFAULT_RERANK_URL = "https://albert.api.etalab.gouv.fr"
 DEFAULT_RERANK_MODEL = "openweight-rerank"
 DEFAULT_TOP_K = 20
+DEFAULT_MAX_CHUNKS_PER_JOB = 3
 DEFAULT_OUTPUT = Path("data/assignments.json")
 DEFAULT_SUMMARY_OUTPUT = Path("data/assignments_summary.json")
 
@@ -38,69 +33,15 @@ class AssignmentConfig:
     collection: str
     qdrant_url: str
     embedding_model: str
-    embedding_base_url: str
+    embeddings_url: str
+    chat_completions_url: str
+    llm_model: str
     rerank_url: str
     rerank_model: str
     top_k: int
+    max_chunks_per_job: int
     output: Path
     summary_output: Path
-
-
-class QdrantSearchClient:
-    def __init__(self, base_url: str) -> None:
-        self.base_url = base_url.rstrip("/")
-
-    def search(
-        self, collection: str, vector: Sequence[float], top_k: int
-    ) -> list[dict]:
-        payload = {
-            "vector": vector,
-            "top": top_k,
-            "with_payload": True,
-            "with_vectors": False,
-        }
-        response = requests.post(
-            f"{self.base_url}/collections/{collection}/points/search",
-            json=payload,
-            timeout=60,
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data.get("result", [])
-
-
-class RerankClient:
-    def __init__(self, base_url: str, model: str, api_key: str) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.model = model
-        self.api_key = api_key
-
-    def rerank(
-        self,
-        query: str,
-        documents: Sequence[str],
-        top_n: int,
-    ) -> list[dict]:
-        if not documents:
-            return []
-        payload = {
-            "model": self.model,
-            "query": query,
-            "documents": list(documents),
-            "top_n": top_n,
-        }
-        response = requests.post(
-            f"{self.base_url}/v1/rerank",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=60,
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data.get("data") or data.get("results") or []
 
 
 def parse_args() -> AssignmentConfig:
@@ -125,13 +66,8 @@ def parse_args() -> AssignmentConfig:
     )
     parser.add_argument(
         "--embedding-model",
-        default=DEFAULT_EMBEDDING_MODEL,
+        default=None,
         help="Socle IA embedding model name.",
-    )
-    parser.add_argument(
-        "--embedding-base-url",
-        default=DEFAULT_EMBEDDING_BASE_URL,
-        help="Base URL for the Socle IA embeddings API.",
     )
     parser.add_argument(
         "--rerank-url",
@@ -150,6 +86,12 @@ def parse_args() -> AssignmentConfig:
         help="Number of candidates to retrieve from Qdrant before reranking.",
     )
     parser.add_argument(
+        "--max-chunks-per-job",
+        type=int,
+        default=DEFAULT_MAX_CHUNKS_PER_JOB,
+        help="Maximum number of reranked chunks to keep per job description.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=DEFAULT_OUTPUT,
@@ -159,46 +101,72 @@ def parse_args() -> AssignmentConfig:
         "--summary-output",
         type=Path,
         default=DEFAULT_SUMMARY_OUTPUT,
-        help=(
-            "Path to the JSON file where aggregated assignment scores will be saved."
-        ),
+        help="Path to the JSON file where aggregated assignment scores will be saved.",
+    )
+    parser.add_argument(
+        "--llm-model",
+        default=None,
+        help="Model name for LLM question duty extraction.",
     )
     args = parser.parse_args()
+
+    settings = get_settings()
+
     return AssignmentConfig(
         input_dir=args.input_dir,
         collection=args.collection,
         qdrant_url=args.qdrant_url,
-        embedding_model=args.embedding_model,
-        embedding_base_url=args.embedding_base_url,
+        embedding_model=args.embedding_model or settings.embedding_model,
+        embeddings_url=settings.embeddings_url,
+        chat_completions_url=settings.chat_completions_url,
+        llm_model=args.llm_model or settings.llm_model,
         rerank_url=args.rerank_url,
         rerank_model=args.rerank_model,
         top_k=args.top_k,
+        max_chunks_per_job=args.max_chunks_per_job,
         output=args.output,
         summary_output=args.summary_output,
     )
 
 
-def iter_question_documents(folder: Path) -> Iterable[Path]:
-    yield from load_documents(folder)
+def cap_matches_per_job(matches: list[dict], max_chunks: int) -> list[dict]:
+    if max_chunks <= 0:
+        return []
+    grouped: dict[str, list[dict]] = {}
+    for match in matches:
+        job_key = match.get("job_id") or match.get("job_filename")
+        if not job_key:
+            continue
+        grouped.setdefault(str(job_key), []).append(match)
+
+    capped: list[dict] = []
+    for group_matches in grouped.values():
+        group_matches.sort(
+            key=lambda item: (
+                -(float(item.get("score") or 0.0)),
+                int(item.get("rerank_position") or 0),
+            )
+        )
+        capped.extend(group_matches[:max_chunks])
+
+    capped.sort(key=lambda item: int(item.get("rerank_position") or 0))
+    for idx, item in enumerate(capped, start=1):
+        item["rank"] = idx
+    return capped
 
 
 def main() -> None:  # noqa: C901
     config = parse_args()
 
-    socle_api_key = os.environ.get("SOCLE_IA_API_KEY")
-    if not socle_api_key:
-        raise ValueError("SOCLE_IA_API_KEY environment variable is not set")
-
-    rerank_api_key = os.environ.get("ALBERT_API_KEY")
-    if not rerank_api_key:
-        raise ValueError("ALBERT_API_KEY environment variable is not set")
+    socle_api_key = require_api_key("SOCLE_IA_API_KEY")
+    rerank_api_key = require_api_key("ALBERT_API_KEY")
 
     embedder = EmbeddingClient(
-        base_url=config.embedding_base_url,
+        url=config.embeddings_url,
         model=config.embedding_model,
         api_key=socle_api_key,
     )
-    qdrant = QdrantSearchClient(config.qdrant_url)
+    qdrant = QdrantClient(config.qdrant_url)
     reranker = RerankClient(
         base_url=config.rerank_url,
         model=config.rerank_model,
@@ -207,7 +175,7 @@ def main() -> None:  # noqa: C901
 
     assignments: list[dict] = []
     summary_assignments: dict[str, list[dict[str, float | str]]] = {}
-    question_paths = list(iter_question_documents(config.input_dir))
+    question_paths = list(load_documents(config.input_dir))
     if not question_paths:
         raise FileNotFoundError(
             f"No documents found in input directory '{config.input_dir}'."
@@ -219,70 +187,93 @@ def main() -> None:  # noqa: C901
             print(f"Skipping empty question file: {question_path}")
             continue
 
-        question_vector = embedder.embed(question_text)
-        candidates = qdrant.search(config.collection, question_vector, config.top_k)
-        if not candidates:
+        question_units = [question_text]
+        if config.top_k > 0:
+            chat_client = SocleLLMClient(
+                url=config.chat_completions_url,
+                model=config.llm_model,
+                api_key=socle_api_key,
+            )
+            llm_client = LLMQuestionDutyExtractor(client=chat_client)
+            question_units = llm_client.request_duties(question_text)
+
+        all_matches: list[dict] = []
+        total_candidates = 0
+        for unit_index, question_unit in enumerate(question_units):
+            question_vector = embedder.embed(question_unit)
+            candidates = qdrant.search(config.collection, question_vector, config.top_k)
+            if not candidates:
+                continue
+
+            total_candidates += len(candidates)
+            candidate_texts: list[str] = []
+            for candidate in candidates:
+                payload = candidate.get("payload") or {}
+                text = payload.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    candidate_texts.append("")
+                else:
+                    candidate_texts.append(text)
+
+            rerank_results = reranker.rerank(
+                query=question_unit,
+                documents=candidate_texts,
+                top_n=len(candidate_texts),
+            )
+
+            for rerank_position, result in enumerate(rerank_results, start=1):
+                candidate_index = result.get("index")
+                if candidate_index is None or candidate_index >= len(candidates):
+                    continue
+                candidate = candidates[candidate_index]
+                payload = candidate.get("payload") or {}
+
+                job_id = payload.get("job_id") or payload.get("job_path")
+                if not job_id:
+                    continue
+                all_matches.append(
+                    {
+                        "rank": len(all_matches) + 1,
+                        "rerank_position": rerank_position,
+                        "score": result.get("score") or result.get("relevance_score"),
+                        "job_id": job_id,
+                        "job_title": payload.get("job_title"),
+                        "job_filename": payload.get("job_filename")
+                        or payload.get("filename"),
+                        "job_path": payload.get("job_path") or payload.get("path"),
+                        "section_title": payload.get("section_title"),
+                        "section_index": payload.get("section_index"),
+                        "chunk_index": payload.get("chunk_index"),
+                        "chunk_preview": payload.get("chunk_preview"),
+                        "chunk_type": payload.get("chunk_type"),
+                        "duty_index": payload.get("duty_index"),
+                        "question_unit": question_unit,
+                        "question_unit_index": unit_index,
+                    }
+                )
+
+        if not all_matches:
             print(
-                f"No candidates found in collection '{config.collection}' for {question_path}"
+                f"No candidates found in collection '{config.collection}'"
+                f" for {question_path}"
             )
             continue
 
-        candidate_texts: list[str] = []
-        for candidate in candidates:
-            payload = candidate.get("payload") or {}
-            text = payload.get("text")
-            if not isinstance(text, str) or not text.strip():
-                candidate_texts.append("")
-            else:
-                candidate_texts.append(text)
-
-        rerank_results = reranker.rerank(
-            query=question_text,
-            documents=candidate_texts,
-            top_n=len(candidate_texts),
-        )
-
-        matches: list[dict] = []
-        for rerank_position, result in enumerate(rerank_results, start=1):
-            candidate_index = result.get("index")
-            if candidate_index is None or candidate_index >= len(candidates):
-                continue
-            candidate = candidates[candidate_index]
-            payload = candidate.get("payload") or {}
-
-            job_id = payload.get("job_id") or payload.get("job_path")
-            if not job_id:
-                continue
-            matches.append(
-                {
-                    "rank": len(matches) + 1,
-                    "rerank_position": rerank_position,
-                    "score": result.get("score") or result.get("relevance_score"),
-                    "job_id": job_id,
-                    "job_title": payload.get("job_title"),
-                    "job_filename": payload.get("job_filename")
-                    or payload.get("filename"),
-                    "job_path": payload.get("job_path") or payload.get("path"),
-                    "section_title": payload.get("section_title"),
-                    "section_index": payload.get("section_index"),
-                    "chunk_index": payload.get("chunk_index"),
-                    "chunk_preview": payload.get("chunk_preview"),
-                    # "chunk_text": payload.get("text"),
-                }
-            )
+        capped_matches = cap_matches_per_job(all_matches, config.max_chunks_per_job)
 
         assignments.append(
             {
                 "question_file": question_path.name,
                 "question_path": str(question_path),
                 "question_text": question_text,
-                "retrieval_candidates": len(candidates),
-                "matches": matches,
+                "question_units": question_units,
+                "retrieval_candidates": total_candidates,
+                "matches": capped_matches,
             }
         )
 
         score_by_filename: dict[str, float] = {}
-        for match in matches:
+        for match in capped_matches:
             job_filename = match.get("job_filename")
             score = match.get("score")
             if not job_filename or score is None:
