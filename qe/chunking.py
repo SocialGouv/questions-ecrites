@@ -278,7 +278,7 @@ def build_chunk_payload(
     base_payload = {
         "kind": "chunk",
         "job_id": job_id,
-        "job_filename": path.name,
+        "user": path.stem.lower(),
         "job_path": str(path),
         "file_extension": path.suffix.lower(),
         "section_title": chunk.title,
