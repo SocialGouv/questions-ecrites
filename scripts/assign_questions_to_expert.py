@@ -134,7 +134,7 @@ def cap_matches_per_job(matches: list[dict], max_chunks: int) -> list[dict]:
         return []
     grouped: dict[str, list[dict]] = {}
     for match in matches:
-        job_key = match.get("job_id") or match.get("job_filename")
+        job_key = match.get("job_id") or match.get("user")
         if not job_key:
             continue
         grouped.setdefault(str(job_key), []).append(match)
@@ -238,8 +238,7 @@ def main() -> None:  # noqa: C901
                         "score": result.get("score") or result.get("relevance_score"),
                         "job_id": job_id,
                         "job_title": payload.get("job_title"),
-                        "job_filename": payload.get("job_filename")
-                        or payload.get("filename"),
+                        "user": payload.get("user"),
                         "job_path": payload.get("job_path") or payload.get("path"),
                         "section_title": payload.get("section_title"),
                         "section_index": payload.get("section_index"),
@@ -272,27 +271,26 @@ def main() -> None:  # noqa: C901
             }
         )
 
-        score_by_filename: dict[str, float] = {}
+        score_by_user: dict[str, float] = {}
         for match in capped_matches:
-            job_filename = match.get("job_filename")
+            user = match.get("user")
             score = match.get("score")
-            if not job_filename or score is None:
+            if not user or score is None:
                 continue
             try:
                 numeric_score = float(score)
             except (TypeError, ValueError):
                 continue
-            score_by_filename[job_filename] = (
-                score_by_filename.get(job_filename, 0.0) + numeric_score
-            )
+            score_by_user[user] = score_by_user.get(user, 0.0) + numeric_score
 
-        summary_assignments[question_path.name] = [
+        question_key = question_path.stem.lower()
+        summary_assignments[question_key] = [
             {
-                "job_filename": job_filename,
+                "user": user,
                 "cumulative_score": cumulative_score,
             }
-            for job_filename, cumulative_score in sorted(
-                score_by_filename.items(), key=lambda item: item[1], reverse=True
+            for user, cumulative_score in sorted(
+                score_by_user.items(), key=lambda item: item[1], reverse=True
             )
         ]
 
