@@ -8,8 +8,9 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from qe.clients.llm import SocleLLMClient
+from qe.assignment import aggregate_matches, build_matches, retrieve_candidates
 from qe.clients.embedding import EmbeddingClient
+from qe.clients.llm import SocleLLMClient
 from qe.clients.qdrant import QdrantClient
 from qe.clients.rerank import RerankClient
 from qe.config import get_settings, require_api_key
@@ -22,7 +23,7 @@ DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_RERANK_URL = "https://albert.api.etalab.gouv.fr"
 DEFAULT_RERANK_MODEL = "openweight-rerank"
 DEFAULT_TOP_K = 20
-DEFAULT_MAX_CHUNKS_PER_JOB = 3
+DEFAULT_MAX_CHUNKS_PER_JOB = 5
 DEFAULT_OUTPUT = Path("data/assignments.json")
 DEFAULT_SUMMARY_OUTPUT = Path("data/assignments_summary.json")
 
@@ -83,13 +84,17 @@ def parse_args() -> AssignmentConfig:
         "--top-k",
         type=int,
         default=DEFAULT_TOP_K,
-        help="Number of candidates to retrieve from Qdrant before reranking.",
+        help="Number of candidates to retrieve from Qdrant per query unit before reranking.",
     )
     parser.add_argument(
         "--max-chunks-per-job",
         type=int,
         default=DEFAULT_MAX_CHUNKS_PER_JOB,
-        help="Maximum number of reranked chunks to keep per job description.",
+        help=(
+            "Maximum number of reranked chunks to include per job when summing scores. "
+            "Rewards jobs that cover multiple aspects of the question while preventing "
+            "volume from dominating. Default: 5."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -109,7 +114,6 @@ def parse_args() -> AssignmentConfig:
         help="Model name for LLM question duty extraction.",
     )
     args = parser.parse_args()
-
     settings = get_settings()
 
     return AssignmentConfig(
@@ -129,33 +133,7 @@ def parse_args() -> AssignmentConfig:
     )
 
 
-def cap_matches_per_job(matches: list[dict], max_chunks: int) -> list[dict]:
-    if max_chunks <= 0:
-        return []
-    grouped: dict[str, list[dict]] = {}
-    for match in matches:
-        job_key = match.get("job_id") or match.get("user")
-        if not job_key:
-            continue
-        grouped.setdefault(str(job_key), []).append(match)
-
-    capped: list[dict] = []
-    for group_matches in grouped.values():
-        group_matches.sort(
-            key=lambda item: (
-                -(float(item.get("score") or 0.0)),
-                int(item.get("rerank_position") or 0),
-            )
-        )
-        capped.extend(group_matches[:max_chunks])
-
-    capped.sort(key=lambda item: int(item.get("rerank_position") or 0))
-    for idx, item in enumerate(capped, start=1):
-        item["rank"] = idx
-    return capped
-
-
-def main() -> None:  # noqa: C901
+def main() -> None:
     config = parse_args()
 
     socle_api_key = require_api_key("SOCLE_IA_API_KEY")
@@ -187,108 +165,63 @@ def main() -> None:  # noqa: C901
             print(f"Skipping empty question file: {question_path}")
             continue
 
-        question_units = [question_text]
+        # Extract duty units for retrieval diversity; stored for traceability.
+        duty_units: list[str] = []
         if config.top_k > 0:
             chat_client = SocleLLMClient(
                 url=config.chat_completions_url,
                 model=config.llm_model,
                 api_key=socle_api_key,
             )
-            llm_client = LLMQuestionDutyExtractor(client=chat_client)
-            question_units = llm_client.request_duties(question_text)
-
-        all_matches: list[dict] = []
-        total_candidates = 0
-        for unit_index, question_unit in enumerate(question_units):
-            question_vector = embedder.embed(question_unit)
-            candidates = qdrant.search(config.collection, question_vector, config.top_k)
-            if not candidates:
-                continue
-
-            total_candidates += len(candidates)
-            candidate_texts: list[str] = []
-            for candidate in candidates:
-                payload = candidate.get("payload") or {}
-                text = payload.get("text")
-                if not isinstance(text, str) or not text.strip():
-                    candidate_texts.append("")
-                else:
-                    candidate_texts.append(text)
-
-            rerank_results = reranker.rerank(
-                query=question_unit,
-                documents=candidate_texts,
-                top_n=len(candidate_texts),
+            duty_units = LLMQuestionDutyExtractor(client=chat_client).request_duties(
+                question_text
             )
 
-            for rerank_position, result in enumerate(rerank_results, start=1):
-                candidate_index = result.get("index")
-                if candidate_index is None or candidate_index >= len(candidates):
-                    continue
-                candidate = candidates[candidate_index]
-                payload = candidate.get("payload") or {}
+        # Full question leads; duty units broaden recall.
+        query_units = [question_text] + duty_units
 
-                job_id = payload.get("job_id") or payload.get("job_path")
-                if not job_id:
-                    continue
-                all_matches.append(
-                    {
-                        "rank": len(all_matches) + 1,
-                        "rerank_position": rerank_position,
-                        "score": result.get("score") or result.get("relevance_score"),
-                        "job_id": job_id,
-                        "job_title": payload.get("job_title"),
-                        "user": payload.get("user"),
-                        "job_path": payload.get("job_path") or payload.get("path"),
-                        "section_title": payload.get("section_title"),
-                        "section_index": payload.get("section_index"),
-                        "chunk_index": payload.get("chunk_index"),
-                        "chunk_preview": payload.get("chunk_preview"),
-                        "chunk_type": payload.get("chunk_type"),
-                        "duty_index": payload.get("duty_index"),
-                        "question_unit": question_unit,
-                        "question_unit_index": unit_index,
-                    }
-                )
-
-        if not all_matches:
+        candidates = retrieve_candidates(
+            query_units=query_units,
+            embedder=embedder,
+            qdrant=qdrant,
+            collection=config.collection,
+            top_k=config.top_k,
+        )
+        if not candidates:
             print(
                 f"No candidates found in collection '{config.collection}'"
                 f" for {question_path}"
             )
             continue
 
-        capped_matches = cap_matches_per_job(all_matches, config.max_chunks_per_job)
+        matches = build_matches(
+            candidates=candidates,
+            reranker=reranker,
+            query=question_text,
+        )
+        if not matches:
+            print(f"No rerank results for {question_path}")
+            continue
+
+        kept_matches, score_by_user = aggregate_matches(
+            matches,
+            max_chunks_per_job=config.max_chunks_per_job,
+        )
 
         assignments.append(
             {
                 "question_file": question_path.name,
                 "question_path": str(question_path),
                 "question_text": question_text,
-                "question_units": question_units,
-                "retrieval_candidates": total_candidates,
-                "matches": capped_matches,
+                "question_units": duty_units,
+                "retrieval_candidates": len(candidates),
+                "matches": kept_matches,
             }
         )
 
-        score_by_user: dict[str, float] = {}
-        for match in capped_matches:
-            user = match.get("user")
-            score = match.get("score")
-            if not user or score is None:
-                continue
-            try:
-                numeric_score = float(score)
-            except (TypeError, ValueError):
-                continue
-            score_by_user[user] = score_by_user.get(user, 0.0) + numeric_score
-
         question_key = question_path.stem.lower()
         summary_assignments[question_key] = [
-            {
-                "user": user,
-                "cumulative_score": cumulative_score,
-            }
+            {"user": user, "cumulative_score": cumulative_score}
             for user, cumulative_score in sorted(
                 score_by_user.items(), key=lambda item: item[1], reverse=True
             )
@@ -305,9 +238,8 @@ def main() -> None:  # noqa: C901
         encoding="utf-8",
     )
     print(
-        "Saved assignments for"
-        f" {len(assignments)} questions to {config.output}"
-        f" and {config.summary_output}"
+        f"Saved assignments for {len(assignments)} questions"
+        f" to {config.output} and {config.summary_output}"
     )
 
 
