@@ -21,14 +21,12 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-from qe import db
-from qe.chunking import ChunkCache, Chunker, build_chunk_payload, chunker_factory
-from qe.clients.llm import SocleLLMClient
+from qe.chunking import ChunkCache, chunker_factory
 from qe.clients.embedding import EmbeddingClient
+from qe.clients.llm import SocleLLMClient
 from qe.clients.qdrant import QdrantClient
 from qe.config import get_settings, require_api_key
-from qe.documents import load_documents, read_document
-from qe.hashing import compute_content_hash, stable_chunk_id, stable_point_id
+from qe.ingestion import ingest_files
 from qe.llm_duties import LLMJobDescriptionDutyExtractor
 
 DEFAULT_INPUT_DIR = Path("data/job_descriptions")
@@ -87,7 +85,7 @@ def parse_args() -> IngestionConfig:
     parser.add_argument(
         "--llm-model",
         default=None,
-        help=("Model name for LLM chunking. "),
+        help="Model name for LLM chunking.",
     )
     args = parser.parse_args()
 
@@ -107,101 +105,6 @@ def parse_args() -> IngestionConfig:
     )
 
 
-def _delete_job_chunks(qdrant: QdrantClient, collection: str, job_id: str) -> None:
-    filter_payload = {"must": [{"key": "job_id", "match": {"value": job_id}}]}
-    qdrant.delete_points_by_filter(collection, filter_payload)
-
-
-def ingest_files(  # noqa: C901
-    config: IngestionConfig,
-    embedder: EmbeddingClient,
-    qdrant: QdrantClient,
-    chunker: Chunker,
-) -> None:
-    files = list(load_documents(config.input_dir))
-    if not files:
-        print(f"No supported files found in {config.input_dir}.")
-        return
-
-    non_empty_text = None
-    for file_path in files:
-        text = read_document(file_path).strip()
-        if text:
-            non_empty_text = text
-            break
-
-    if not non_empty_text:
-        print("No non-empty documents found to ingest.")
-        return
-
-    collection_exists = qdrant.collection_exists(config.collection)
-    if not collection_exists:
-        embedding = embedder.embed(non_empty_text)
-        qdrant.create_collection(config.collection, vector_size=len(embedding))
-        print(f"Created collection '{config.collection}' with size {len(embedding)}.")
-        collection_exists = True
-
-    manifest = db.get_manifest_entries()
-    updated_manifest = dict(manifest)
-
-    indexed_paths = {str(path) for path in files}
-    removed_paths = [path_str for path_str in manifest if path_str not in indexed_paths]
-    if removed_paths and collection_exists:
-        for removed_path in removed_paths:
-            job_id = stable_point_id(Path(removed_path))
-            _delete_job_chunks(qdrant, config.collection, job_id)
-            updated_manifest.pop(removed_path, None)
-            db.delete_manifest(removed_path)
-            print(f"Removed stale entries for {removed_path}")
-
-    for file_path in files:
-        text = read_document(file_path).strip()
-        if not text:
-            print(f"Skipping empty file: {file_path}")
-            continue
-
-        document_hash = compute_content_hash(text)
-        path_key = str(file_path)
-        if manifest.get(path_key) == document_hash:
-            print(f"Skipping unchanged file: {file_path}")
-            continue
-
-        job_id = stable_point_id(file_path)
-        if collection_exists:
-            _delete_job_chunks(qdrant, config.collection, job_id)
-
-        chunks = chunker.chunk(text=text)
-        chunk_points: list[dict] = []
-        chunk_counter = 0
-        for chunk in chunks:
-            chunk_id = stable_chunk_id(
-                file_path, chunk.section_index, chunk.chunk_index
-            )
-            embedding = embedder.embed(chunk.text)
-            payload = build_chunk_payload(
-                path=file_path,
-                job_id=job_id,
-                chunk=chunk,
-                document_hash=document_hash,
-            )
-            chunk_points.append(
-                {"id": chunk_id, "vector": embedding, "payload": payload}
-            )
-            chunk_counter += 1
-
-        if not chunk_points:
-            print(f"No valid chunks produced for {file_path}; skipping.")
-            continue
-
-        qdrant.upsert_points(config.collection, chunk_points)
-        updated_manifest[path_key] = document_hash
-        db.upsert_manifest(path_key, document_hash)
-        print(
-            f"Upserted {chunk_counter} chunks for '{file_path.name}'"
-            f" into '{config.collection}'."
-        )
-
-
 def main() -> None:
     config = parse_args()
 
@@ -211,7 +114,6 @@ def main() -> None:
         api_key=config.api_key,
     )
     qdrant = QdrantClient(config.qdrant_url)
-
     chat_client = SocleLLMClient(
         url=config.chat_completions_url,
         model=config.llm_model,
@@ -219,13 +121,19 @@ def main() -> None:
     )
     llm_extractor = LLMJobDescriptionDutyExtractor(client=chat_client)
     chunk_cache = ChunkCache(config.chunk_strategy)
-
     chunker = chunker_factory(
         strategy=config.chunk_strategy,
         llm_extractor=llm_extractor,
         chunk_cache=chunk_cache,
     )
-    ingest_files(config, embedder, qdrant, chunker)
+
+    ingest_files(
+        input_dir=config.input_dir,
+        collection=config.collection,
+        embedder=embedder,
+        qdrant=qdrant,
+        chunker=chunker,
+    )
 
 
 if __name__ == "__main__":

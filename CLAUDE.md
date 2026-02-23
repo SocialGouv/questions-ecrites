@@ -26,11 +26,13 @@ qe/                         # Main package (no __init__.py)
 │   ├── llm.py              # SocleLLMClient → Socle IA chat completions
 │   ├── qdrant.py           # QdrantClient → Qdrant vector DB (REST)
 │   └── rerank.py           # RerankClient → Albert reranking API
+├── assignment.py           # retrieve_candidates(), build_matches(), aggregate_matches()
 ├── chunking.py             # HeuristicChunker, LLMDutyChunker, ChunkCache
 ├── config.py               # Settings dataclass, get_settings()
 ├── db.py                   # PostgreSQL: ingest_manifest + chunk_cache tables
 ├── documents.py            # load_documents(), read_document() (.txt/.pdf/.doc/.docx)
 ├── hashing.py              # stable_point_id(), stable_chunk_id(), compute_content_hash()
+├── ingestion.py            # delete_job_chunks(), ingest_files()
 └── llm_duties.py           # LLMJobDescriptionDutyExtractor, LLMQuestionDutyExtractor
 
 scripts/
