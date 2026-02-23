@@ -1,0 +1,68 @@
+name: Claude Issue
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  cancel-in-progress: false
+  group: claude-issue-${{ github.event.issue.number }}
+
+jobs:
+  claude:
+    if: github.event.label.name == 'claude'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install --no-interaction
+
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          branch_prefix: "feat/claude-"
+          show_full_output: true
+          claude_args: >-
+            --max-turns 100
+            --allowedTools "Bash(poetry run python *),Bash(poetry run pytest *),Bash(poetry run ruff *),Bash(mkdir *),Bash(mv *),Bash(cp *),Bash(gh:*)"
+
+      - name: Create PR
+        if: steps.claude.outputs.branch_name != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          EXISTING=$(gh pr list --head "${{ steps.claude.outputs.branch_name }}" --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            echo "PR #$EXISTING already exists for branch ${{ steps.claude.outputs.branch_name }}"
+            exit 0
+          fi
+          gh pr create \
+            --head "${{ steps.claude.outputs.branch_name }}" \
+            --title "feat: #${{ github.event.issue.number }} ${{ github.event.issue.title }}" \
+            --body "$(cat <<'EOF'
+          Closes #${{ github.event.issue.number }}
+
+          PR créée automatiquement par le workflow Claude Issue.
+          EOF
+          )" \
+            --draft
