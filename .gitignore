@@ -55,3 +55,6 @@ tmp/
 *.parquet
 data/
 .chunk_cache
+
+# Falcon
+.falcon
