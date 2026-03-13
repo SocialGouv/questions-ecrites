@@ -4,15 +4,16 @@ import os
 from contextlib import contextmanager
 from typing import Iterator, Sequence
 
-import psycopg
-from psycopg.types.json import Json
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, delete, func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from qe.models import ChunkCache, IngestManifest
+
 
 # ---------------------------------------------------------------------------
-# SQLAlchemy engine + session
+# Engine + session factory
 # ---------------------------------------------------------------------------
 
 
@@ -35,7 +36,7 @@ def get_engine() -> Engine:
     if _engine is None:
         _engine = create_engine(
             _build_database_url(),
-            pool_pre_ping=True,  # drop stale connections before use
+            pool_pre_ping=True,  # discard stale connections before use
             pool_size=5,
             max_overflow=10,
         )
@@ -78,138 +79,53 @@ def check_db_connection() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Raw psycopg connection (kept for existing ingest_manifest / chunk_cache code)
+# ingest_manifest
 # ---------------------------------------------------------------------------
 
 
-def _connection_kwargs() -> dict:
-    host = os.getenv("PGHOST", "localhost")
-    port = int(os.getenv("PGPORT", "5433"))
-    user = os.getenv("PGUSER", "qe")
-    password = os.getenv("PGPASSWORD", "qe")
-    dbname = os.getenv("PGDATABASE", "qe")
-    return {
-        "host": host,
-        "port": port,
-        "user": user,
-        "password": password,
-        "dbname": dbname,
-    }
-
-
-@contextmanager
-def get_connection() -> Iterator[psycopg.Connection]:
-    conn = psycopg.connect(**_connection_kwargs(), autocommit=False)
-    try:
-        yield conn
-        conn.commit()
-    except:  # noqa: E722
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
 def fetch_manifest(path: str) -> str | None:
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT document_hash FROM ingest_manifest WHERE path = %s",
-                (path,),
-            )
-            row = cur.fetchone()
-            return row[0] if row else None
+    with get_session() as session:
+        row = session.get(IngestManifest, path)
+        return row.document_hash if row else None
 
 
 def upsert_manifest(path: str, document_hash: str) -> None:
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO ingest_manifest(path, document_hash)
-                VALUES (%s, %s)
-                ON CONFLICT (path)
-                DO UPDATE SET document_hash = EXCLUDED.document_hash,
-                              updated_at = now()
-                """,
-                (path, document_hash),
+    with get_session() as session:
+        stmt = (
+            pg_insert(IngestManifest)
+            .values(path=path, document_hash=document_hash)
+            .on_conflict_do_update(
+                index_elements=["path"],
+                set_={"document_hash": document_hash, "updated_at": func.now()},
             )
+        )
+        session.execute(stmt)
 
 
 def delete_manifest(path: str) -> None:
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM ingest_manifest WHERE path = %s", (path,))
+    with get_session() as session:
+        session.execute(delete(IngestManifest).where(IngestManifest.path == path))
 
 
 def get_manifest_entries() -> dict[str, str]:
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT path, document_hash FROM ingest_manifest")
-            rows = cur.fetchall()
-            return {row[0]: row[1] for row in rows}
-
-
-def fetch_chunk_cache(strategy: str, document_hash: str) -> list[dict] | None:
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT chunks
-                FROM chunk_cache
-                WHERE strategy = %s AND document_hash = %s
-                """,
-                (strategy, document_hash),
-            )
-            row = cur.fetchone()
-            return row[0] if row else None
-
-
-def save_chunk_cache(strategy: str, document_hash: str, chunks: Sequence[dict]) -> None:
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO chunk_cache(strategy, document_hash, chunks)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (strategy, document_hash)
-                DO UPDATE SET chunks = EXCLUDED.chunks,
-                              updated_at = now()
-                """,
-                (strategy, document_hash, Json(list(chunks))),
-            )
-
-
-def delete_chunk_cache(strategy: str, document_hash: str) -> None:
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM chunk_cache WHERE strategy = %s AND document_hash = %s",
-                (strategy, document_hash),
-            )
+    with get_session() as session:
+        rows = session.execute(select(IngestManifest)).scalars().all()
+        return {row.path: row.document_hash for row in rows}
 
 
 def get_manifest_entries_under_prefix(path_prefix: str) -> dict[str, str]:
-    """Return manifest entries whose path starts with the given prefix.
-
-    Notes:
-      - `ingest_manifest.path` stores whatever string was passed by the ingest script.
-        In practice it is the stringified `Path` (often relative to repo root).
-      - We do a simple SQL prefix match here (`LIKE prefix%`). Callers should ensure
-        the prefix format matches the stored path format they want to target.
-    """
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT path, document_hash
-                FROM ingest_manifest
-                WHERE path LIKE %s
-                """,
-                (f"{path_prefix}%",),
+    """Return manifest entries whose path starts with the given prefix."""
+    with get_session() as session:
+        rows = (
+            session.execute(
+                select(IngestManifest).where(
+                    IngestManifest.path.like(f"{path_prefix}%")
+                )
             )
-            rows = cur.fetchall()
-            return {row[0]: row[1] for row in rows}
+            .scalars()
+            .all()
+        )
+        return {row.path: row.document_hash for row in rows}
 
 
 def delete_manifest_under_prefix(path_prefix: str) -> int:
@@ -217,29 +133,58 @@ def delete_manifest_under_prefix(path_prefix: str) -> int:
 
     Returns the number of deleted rows.
     """
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM ingest_manifest WHERE path LIKE %s",
-                (f"{path_prefix}%",),
+    with get_session() as session:
+        result = session.execute(
+            delete(IngestManifest).where(IngestManifest.path.like(f"{path_prefix}%"))
+        )
+        return result.rowcount
+
+
+# ---------------------------------------------------------------------------
+# chunk_cache
+# ---------------------------------------------------------------------------
+
+
+def fetch_chunk_cache(strategy: str, document_hash: str) -> list[dict] | None:
+    with get_session() as session:
+        row = session.get(ChunkCache, (strategy, document_hash))
+        return row.chunks if row else None
+
+
+def save_chunk_cache(strategy: str, document_hash: str, chunks: Sequence[dict]) -> None:
+    chunks_list = list(chunks)
+    with get_session() as session:
+        stmt = (
+            pg_insert(ChunkCache)
+            .values(strategy=strategy, document_hash=document_hash, chunks=chunks_list)
+            .on_conflict_do_update(
+                index_elements=["strategy", "document_hash"],
+                set_={"chunks": chunks_list, "updated_at": func.now()},
             )
-            return cur.rowcount
+        )
+        session.execute(stmt)
+
+
+def delete_chunk_cache(strategy: str, document_hash: str) -> None:
+    with get_session() as session:
+        session.execute(
+            delete(ChunkCache).where(
+                ChunkCache.strategy == strategy,
+                ChunkCache.document_hash == document_hash,
+            )
+        )
 
 
 def delete_chunk_cache_for_document_hashes(document_hashes: Sequence[str]) -> int:
-    """Delete chunk_cache rows for the provided document hashes.
+    """Delete chunk_cache rows for the provided document hashes (all strategies).
 
-    This removes cache entries for *all* strategies for those documents.
     Returns the number of deleted rows.
     """
-    hashes = list(dict.fromkeys(document_hashes))
+    hashes = list(dict.fromkeys(document_hashes))  # deduplicate, preserve order
     if not hashes:
         return 0
-
-    # Use `= ANY(%s)` to avoid string-building an `IN (...)` clause.
-    # psycopg will adapt the Python list into a Postgres array.
-    sql = "DELETE FROM chunk_cache WHERE document_hash = ANY(%s)"
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, (hashes,))
-            return cur.rowcount
+    with get_session() as session:
+        result = session.execute(
+            delete(ChunkCache).where(ChunkCache.document_hash.in_(hashes))
+        )
+        return result.rowcount

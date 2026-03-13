@@ -4,6 +4,7 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     ARRAY,
+    JSON,
     BigInteger,
     Boolean,
     Date,
@@ -18,6 +19,37 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
     pass
+
+
+# ---------------------------------------------------------------------------
+# Existing tables (ingest pipeline for job descriptions)
+# ---------------------------------------------------------------------------
+
+
+class IngestManifest(Base):
+    __tablename__ = "ingest_manifest"
+
+    path: Mapped[str] = mapped_column(Text, primary_key=True)
+    document_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ChunkCache(Base):
+    __tablename__ = "chunk_cache"
+
+    strategy: Mapped[str] = mapped_column(Text, primary_key=True)
+    document_hash: Mapped[str] = mapped_column(Text, primary_key=True)
+    chunks: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# ---------------------------------------------------------------------------
+# QE ingestion tables
+# ---------------------------------------------------------------------------
 
 
 class Ministere(Base):
