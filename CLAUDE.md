@@ -96,5 +96,5 @@ This repository has a pre-built code knowledge graph. You MUST use the `falcon_*
 
 These tools are faster and more accurate than grep — they use a pre-computed dependency graph with full symbol resolution.
 
-If the MCP tools are unavailable, read `.falcon/CONTEXT.md` for a static architecture summary as a fallback.
+If the MCP tools are unavailable, mention it at the top of your next answer and read `.falcon/CONTEXT.md` for a static architecture summary as a fallback.
 <!-- END FALCON -->
