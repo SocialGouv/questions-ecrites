@@ -1,20 +1,25 @@
+name: qe  # pin project name so container/volume names never depend on the directory name
+
 services:
   qdrant:
     image: qdrant/qdrant:latest
+    container_name: qe-qdrant
     ports:
       - "6333:6333"
       - "6334:6334"
     volumes:
       - qdrant_storage:/qdrant/storage
+    restart: unless-stopped
 
   postgres:
     image: postgres:16
+    container_name: qe-postgres
     environment:
-      POSTGRES_USER: qe
-      POSTGRES_PASSWORD: qe
-      POSTGRES_DB: qe
+      POSTGRES_USER: ${PGUSER:-qe}
+      POSTGRES_PASSWORD: ${PGPASSWORD:-qe}
+      POSTGRES_DB: ${PGDATABASE:-qe}
     ports:
-      - "5433:5432"
+      - "${PGPORT:-5433}:5432"  # host port 5433 avoids conflicts with any local postgres on 5432
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +27,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
 volumes:
   qdrant_storage:
+    name: qe-qdrant-storage
   postgres_data:
+    name: qe-postgres-data
