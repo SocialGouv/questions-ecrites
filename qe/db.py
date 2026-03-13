@@ -6,6 +6,80 @@ from typing import Iterator, Sequence
 
 import psycopg
 from psycopg.types.json import Json
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+
+
+# ---------------------------------------------------------------------------
+# SQLAlchemy engine + session
+# ---------------------------------------------------------------------------
+
+
+def _build_database_url() -> str:
+    """Build a psycopg3 SQLAlchemy URL from PG* environment variables."""
+    host = os.getenv("PGHOST", "localhost")
+    port = os.getenv("PGPORT", "5433")
+    user = os.getenv("PGUSER", "qe")
+    password = os.getenv("PGPASSWORD", "qe")
+    dbname = os.getenv("PGDATABASE", "qe")
+    return f"postgresql+psycopg://{user}:{password}@{host}:{port}/{dbname}"
+
+
+_engine: Engine | None = None
+
+
+def get_engine() -> Engine:
+    """Return the shared SQLAlchemy engine (created once, reused across calls)."""
+    global _engine
+    if _engine is None:
+        _engine = create_engine(
+            _build_database_url(),
+            pool_pre_ping=True,  # drop stale connections before use
+            pool_size=5,
+            max_overflow=10,
+        )
+    return _engine
+
+
+_SessionLocal: sessionmaker[Session] | None = None
+
+
+def _get_session_factory() -> sessionmaker[Session]:
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = sessionmaker(bind=get_engine(), expire_on_commit=False)
+    return _SessionLocal
+
+
+@contextmanager
+def get_session() -> Iterator[Session]:
+    """Context manager that yields a SQLAlchemy Session and handles commit/rollback."""
+    factory = _get_session_factory()
+    session: Session = factory()
+    try:
+        yield session
+        session.commit()
+    except:  # noqa: E722
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def check_db_connection() -> bool:
+    """Return True if the database is reachable, False otherwise."""
+    try:
+        with get_engine().connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Raw psycopg connection (kept for existing ingest_manifest / chunk_cache code)
+# ---------------------------------------------------------------------------
 
 
 def _connection_kwargs() -> dict:
