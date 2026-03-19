@@ -81,6 +81,45 @@ Computed by `eval_assignments.py` against `data/attributions.json` (ground truth
 - **MRR** — mean reciprocal rank
 - **Score Share, Score Ratio** — rerank score fraction on correct experts
 
+## Testing
+
+Run the test suite with:
+
+```bash
+poetry run pytest
+```
+
+**Philosophy — test what matters, skip what doesn't:**
+
+- **Favour real logic over mocks.** Write tests against actual code paths using
+  real inputs (XML strings, Python objects, etc.).  Mocking is acceptable only
+  when the alternative is standing up an external service (HTTP, database).
+  Never mock just to avoid thinking about the input.
+
+- **Do not chase 100% coverage.**  Cover the important logic and real edge
+  cases.  Do not write tests that merely confirm that Python evaluates
+  `True == True`, or that a third-party library works as documented.
+
+- **Categorise tests by what they need:**
+  - *Pure-logic tests* (no I/O): XML parsers, data transformations, string
+    builders — test these directly, no fixtures or mocks required.
+  - *Integration tests* (DB, HTTP): require a running PostgreSQL / WS
+    endpoint.  Mark with `@pytest.mark.integration` and skip by default in CI
+    unless the service is available.
+  - *End-to-end tests*: run the full ingestion pipeline against a staging DB.
+
+- **Use subclassing instead of `mock.patch` when testing client code.**
+  Override only the transport method (`_post`, `_request`, …) in a local
+  subclass so the rest of the client logic runs for real.  This is more
+  readable and less brittle than patching module-level names.
+
+- **No `pytest-mock` / `unittest.mock` for internal logic.**  Reserve the
+  `mocker` fixture for cases where subclassing is impractical (e.g. patching
+  `datetime.date.today()`).
+
+- **Test files live in `tests/`**, named `test_<module>.py`.  Group tests with
+  plain functions (not classes) unless shared fixtures make classes worthwhile.
+
 <!-- BEGIN FALCON -->
 ## RepoFalcon Code Knowledge Graph
 
