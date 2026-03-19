@@ -8,7 +8,7 @@ install:
 
 # Testing
 test:
-	poetry run pytest tests/unit
+	poetry run pytest
 	@rm -f .coverage.* || true
 	@echo "===== Finished running unit tests ====="
 
