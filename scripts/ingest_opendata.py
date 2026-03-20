@@ -18,8 +18,6 @@ Typical workflow for the historical ingest:
        (and prior years as needed)
     2. Place them in data/opendata/
     3. Run this script
-    4. Manually tag is_social=true in the ministeres table for in-scope
-       ministries (health, solidarity, labour...)
 """
 
 from __future__ import annotations

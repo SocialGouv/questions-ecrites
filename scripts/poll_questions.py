@@ -18,8 +18,11 @@ Environment variables (all required unless a default is shown):
     WS_LOOKBACK_DAYS  (optional, default 7) Lookback window for rechercherDossier
 
 Usage:
-    # Normal run (all loops, social questions only)
+    # Ingest all questions (no ministry filter)
     poetry run python scripts/poll_questions.py
+
+    # Restrict to a specific ministry (substring match on titre_jo)
+    poetry run python scripts/poll_questions.py --ministry "cohésion sociale"
 
     # Dry-run: connect and test, but do not write to the DB
     poetry run python scripts/poll_questions.py --dry-run
@@ -28,9 +31,6 @@ Usage:
     poetry run python scripts/poll_questions.py --skip-dossier
     poetry run python scripts/poll_questions.py --skip-state-changes
     poetry run python scripts/poll_questions.py --skip-attributions
-
-    # Also ingest non-social questions
-    poetry run python scripts/poll_questions.py --no-social-filter
 
     # Filter by source
     poetry run python scripts/poll_questions.py --source AN
@@ -93,11 +93,13 @@ def _parse_args() -> argparse.Namespace:
         help="Skip the chercherAttributionsDate loop.",
     )
     parser.add_argument(
-        "--no-social-filter",
-        action="store_true",
+        "--ministry",
+        default=None,
+        metavar="TEXT",
         help=(
-            "Ingest all questions regardless of the is_social flag.  "
-            "By default only social ministries are ingested."
+            "Case-insensitive substring filter on the ministry label "
+            "(titre_jo).  Only questions attributed to a matching ministry "
+            "are ingested.  Omit to ingest all ministries."
         ),
     )
     parser.add_argument(
@@ -167,13 +169,11 @@ def main() -> None:
         return
 
     # --- run the polling loops ---
-    social_only = not args.no_social_filter
-
     try:
         stats = run_full_poll(
             client,
             lookback_days=lookback_days,
-            social_only=social_only,
+            ministry_filter=args.ministry or None,
             sources=args.sources or None,
             skip_dossier=args.skip_dossier,
             skip_state_changes=args.skip_state_changes,
@@ -187,10 +187,10 @@ def main() -> None:
         sys.exit(1)
 
     logger.info(
-        "Poll complete — questions upserted: %d, skipped (non-social): %d, "
+        "Poll complete — questions upserted: %d, skipped (out of scope): %d, "
         "state changes: %d, attributions: %d, errors: %d",
         stats.questions_upserted,
-        stats.questions_skipped_not_social,
+        stats.questions_skipped,
         stats.state_changes_processed,
         stats.attributions_processed,
         stats.errors,
