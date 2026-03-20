@@ -72,14 +72,21 @@ class QdrantClient:
         response.raise_for_status()
 
     def search(
-        self, collection: str, vector: Sequence[float], top_k: int
+        self,
+        collection: str,
+        vector: Sequence[float],
+        top_k: int,
+        *,
+        filter: dict | None = None,
     ) -> list[dict]:
-        payload = {
+        payload: dict = {
             "vector": vector,
             "top": top_k,
             "with_payload": True,
             "with_vectors": False,
         }
+        if filter is not None:
+            payload["filter"] = filter
         response = requests.post(
             f"{self.base_url}/collections/{collection}/points/search",
             json=payload,
@@ -88,3 +95,53 @@ class QdrantClient:
         response.raise_for_status()
         data = response.json()
         return data.get("result", [])
+
+    def scroll_all(
+        self,
+        collection: str,
+        *,
+        filter: dict | None = None,
+        with_vectors: bool = True,
+        batch_size: int = 100,
+    ) -> list[dict]:
+        """Fetch all points from a collection, paginating until exhausted.
+
+        Args:
+            collection: Qdrant collection name.
+            filter: Optional Qdrant filter dict (same DSL as search).
+            with_vectors: Whether to include embedding vectors in the result.
+            batch_size: Number of points to fetch per page.
+
+        Returns:
+            List of point dicts with keys ``id``, ``payload``, and optionally
+            ``vector``.
+        """
+        points: list[dict] = []
+        offset: str | None = None
+
+        while True:
+            body: dict = {
+                "limit": batch_size,
+                "with_payload": True,
+                "with_vector": with_vectors,
+            }
+            if filter is not None:
+                body["filter"] = filter
+            if offset is not None:
+                body["offset"] = offset
+
+            response = requests.post(
+                f"{self.base_url}/collections/{collection}/points/scroll",
+                json=body,
+                timeout=60,
+            )
+            response.raise_for_status()
+            data = response.json().get("result", {})
+            batch = data.get("points", [])
+            points.extend(batch)
+
+            offset = data.get("next_page_offset")
+            if offset is None:
+                break
+
+        return points
