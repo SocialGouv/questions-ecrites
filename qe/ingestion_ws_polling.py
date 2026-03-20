@@ -20,11 +20,11 @@ This module orchestrates three distinct polling loops:
    the ``questions`` table and inserting rows into ``question_attributions``.
    The jeton cursor is persisted as well.
 
-For **dossier** ingestion the ``is_social`` flag on ``ministeres`` is used as a
-client-side filter when ``social_only=True`` (the default): only questions
-attributed to a social ministry are stored.  For state-change and attribution
-queues, filtering on ``is_social`` happens by looking up the question's current
-ministry in the DB — questions not present in the DB are silently ignored.
+For **dossier** ingestion, ``ministry_filter`` (optional substring) is applied
+client-side: only questions whose ``ministre_attributaire.titre_jo`` contains
+the filter string (case-insensitive) are stored.  For state-change and
+attribution queues, questions not already in the DB are silently ignored when a
+filter is active.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ class PollingStats:
     """Aggregate counters for one polling run."""
 
     questions_upserted: int = 0
-    questions_skipped_not_social: int = 0
+    questions_skipped: int = 0
     state_changes_processed: int = 0
     attributions_processed: int = 0
     errors: int = 0
@@ -88,14 +88,6 @@ def _load_ministere_cache(session: Session) -> dict[str, int]:
     """Load all known ministeries from DB into a titre_jo -> id mapping."""
     rows = session.execute(select(Ministere.id, Ministere.titre_jo)).all()
     return {row.titre_jo: row.id for row in rows}
-
-
-def _load_social_ids(session: Session) -> set[int]:
-    """Return the set of ministere IDs tagged is_social=true."""
-    rows = session.execute(
-        select(Ministere.id).where(Ministere.is_social.is_(True))
-    ).all()
-    return {row.id for row in rows}
 
 
 def _get_or_create_ministere(
@@ -339,7 +331,7 @@ def poll_new_questions(
     client: ReponseWSClient,
     *,
     lookback_days: int = 7,
-    social_only: bool = True,
+    ministry_filter: str | None = None,
     sources: list[str] | None = None,
 ) -> PollingStats:
     """Fetch new/answered questions from the WS and upsert them into the DB.
@@ -351,12 +343,13 @@ def poll_new_questions(
     Senate: Thursdays) are not missed when the cron runs mid-week.
 
     Args:
-        client:       Authenticated :class:`ReponseWSClient` instance.
-        lookback_days: Number of past days to include in the query window.
-        social_only:  If True, skip questions not attributed to a social
-                      ministry (``is_social=True`` in the ministeres table).
-        sources:      List of sources to query ("AN", "SENAT").  Defaults to
-                      both.
+        client:          Authenticated :class:`ReponseWSClient` instance.
+        lookback_days:   Number of past days to include in the query window.
+        ministry_filter: If set, only ingest questions whose
+                         ``ministre_attributaire.titre_jo`` contains this
+                         string (case-insensitive).  None = ingest all.
+        sources:         List of sources to query ("AN", "SENAT").  Defaults
+                         to both.
     """
     stats = PollingStats()
     today = date.today()
@@ -364,10 +357,10 @@ def poll_new_questions(
     date_fin = today + timedelta(days=7)
 
     logger.info(
-        "poll_new_questions: window %s → %s, social_only=%s",
+        "poll_new_questions: window %s → %s, ministry_filter=%r",
         date_debut,
         date_fin,
-        social_only,
+        ministry_filter,
     )
 
     questions = client.rechercher_dossier(
@@ -380,17 +373,18 @@ def poll_new_questions(
     if not questions:
         return stats
 
+    needle = ministry_filter.lower() if ministry_filter else None
+
     with get_session() as session:
         min_cache_by_titre = _load_ministere_cache(session)
-        social_ids = _load_social_ids(session) if social_only else set()
         min_cache_by_id: dict[int, str] = {v: k for k, v in min_cache_by_titre.items()}
 
         for wq in questions:
-            # Client-side social filter: check the attributee ministry
-            if social_only:
+            if needle is not None:
                 attr = wq.ministre_attributaire
-                if attr is None or attr.id not in social_ids:
-                    stats.questions_skipped_not_social += 1
+                label = attr.titre_jo if attr is not None else ""
+                if needle not in label.lower():
+                    stats.questions_skipped += 1
                     continue
 
             try:
@@ -401,9 +395,9 @@ def poll_new_questions(
                 stats.errors += 1
 
     logger.info(
-        "poll_new_questions done: %d upserted, %d skipped (not social), %d errors",
+        "poll_new_questions done: %d upserted, %d skipped (out of scope), %d errors",
         stats.questions_upserted,
-        stats.questions_skipped_not_social,
+        stats.questions_skipped,
         stats.errors,
     )
     return stats
@@ -417,7 +411,7 @@ def poll_new_questions(
 def poll_state_changes(
     client: ReponseWSClient,
     *,
-    social_only: bool = True,
+    ministry_filter: str | None = None,
 ) -> PollingStats:
     """Drain the state-change event queue and apply updates to the DB.
 
@@ -430,9 +424,10 @@ def poll_state_changes(
     - A row is inserted into ``question_state_changes`` for audit.
 
     Args:
-        client:     Authenticated :class:`ReponseWSClient` instance.
-        social_only: If True, skip state changes for questions not present in
-                     the DB (open data ingest already filtered on is_social).
+        client:          Authenticated :class:`ReponseWSClient` instance.
+        ministry_filter: If set, skip state changes for questions not already
+                         in the DB (questions outside the filter were never
+                         ingested).
     """
     stats = PollingStats()
 
@@ -449,7 +444,7 @@ def poll_state_changes(
         batch_count += 1
 
         if changes:
-            _apply_state_changes(changes, social_only=social_only)
+            _apply_state_changes(changes, ministry_filter=ministry_filter)
             stats.state_changes_processed += len(changes)
 
         # Persist cursor after each successful batch
@@ -473,18 +468,15 @@ def poll_state_changes(
 def _apply_state_changes(
     changes: list[WSChangementEtat],
     *,
-    social_only: bool,
+    ministry_filter: str | None,
 ) -> None:
     """Persist a batch of state changes to the DB."""
     with get_session() as session:
         for ce in changes:
-            # Check whether the question exists (social filter is implicit: only
-            # social questions were ingested during open data / earlier WS polls)
             q = session.get(Question, ce.question_id)
             if q is None:
-                if social_only:
-                    continue  # question was not ingested — not in scope
-                # Question not yet known: skip for now (could fetch via WS later)
+                if ministry_filter:
+                    continue  # question was not ingested — outside the filter scope
                 logger.debug(
                     "State change for unknown question %s — skipped", ce.question_id
                 )
@@ -517,7 +509,7 @@ def _apply_state_changes(
 def poll_attributions(
     client: ReponseWSClient,
     *,
-    social_only: bool = True,
+    ministry_filter: str | None = None,
 ) -> PollingStats:
     """Drain the attribution event queue and apply updates to the DB.
 
@@ -529,8 +521,8 @@ def poll_attributions(
     - A row is inserted into ``question_attributions`` for audit.
 
     Args:
-        client:     Authenticated :class:`ReponseWSClient` instance.
-        social_only: If True, skip attributions for questions not in the DB.
+        client:          Authenticated :class:`ReponseWSClient` instance.
+        ministry_filter: If set, skip attributions for questions not in the DB.
     """
     stats = PollingStats()
 
@@ -549,7 +541,7 @@ def poll_attributions(
         batch_count += 1
 
         if attributions:
-            _apply_attributions(attributions, social_only=social_only)
+            _apply_attributions(attributions, ministry_filter=ministry_filter)
             stats.attributions_processed += len(attributions)
 
         _save_cursor(
@@ -572,14 +564,14 @@ def poll_attributions(
 def _apply_attributions(
     attributions: list[WSAttributionDate],
     *,
-    social_only: bool,
+    ministry_filter: str | None,
 ) -> None:
     """Persist a batch of attribution events to the DB."""
     with get_session() as session:
         for attr in attributions:
             q = session.get(Question, attr.question_id)
             if q is None:
-                if social_only:
+                if ministry_filter:
                     continue
                 logger.debug(
                     "Attribution for unknown question %s — skipped", attr.question_id
@@ -671,7 +663,7 @@ def run_full_poll(
     client: ReponseWSClient,
     *,
     lookback_days: int = 7,
-    social_only: bool = True,
+    ministry_filter: str | None = None,
     sources: list[str] | None = None,
     skip_dossier: bool = False,
     skip_state_changes: bool = False,
@@ -684,7 +676,8 @@ def run_full_poll(
     Args:
         client:            Authenticated :class:`ReponseWSClient` instance.
         lookback_days:     Lookback window for rechercherDossier.
-        social_only:       Apply is_social filter.
+        ministry_filter:   Case-insensitive substring filter on
+                           ``ministre_attributaire.titre_jo``.  None = no filter.
         sources:           AN / SENAT filter for dossier loop.
         skip_dossier:      Skip the rechercherDossier loop.
         skip_state_changes: Skip the state-change queue.
@@ -696,20 +689,20 @@ def run_full_poll(
         s = poll_new_questions(
             client,
             lookback_days=lookback_days,
-            social_only=social_only,
+            ministry_filter=ministry_filter,
             sources=sources,
         )
         total.questions_upserted += s.questions_upserted
-        total.questions_skipped_not_social += s.questions_skipped_not_social
+        total.questions_skipped += s.questions_skipped
         total.errors += s.errors
 
     if not skip_state_changes:
-        s = poll_state_changes(client, social_only=social_only)
+        s = poll_state_changes(client, ministry_filter=ministry_filter)
         total.state_changes_processed += s.state_changes_processed
         total.errors += s.errors
 
     if not skip_attributions:
-        s = poll_attributions(client, social_only=social_only)
+        s = poll_attributions(client, ministry_filter=ministry_filter)
         total.attributions_processed += s.attributions_processed
         total.errors += s.errors
 

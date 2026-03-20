@@ -17,7 +17,7 @@ Key conventions:
     e.g. "AN-17-QE-12345".
   - Ministries are inserted on-the-fly into the `ministeres` table using their
     `titre_jo` label.  `intitule_min` is initialised to the same label and can
-    be corrected manually.  `is_social` defaults to False and is tagged manually.
+    be corrected manually.
 """
 
 from __future__ import annotations

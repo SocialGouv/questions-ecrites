@@ -57,8 +57,7 @@ def _ministeres(session, n: int) -> None:
         print("  (empty)")
         return
     for m in rows:
-        social = "✓ social" if m.is_social else ""
-        print(f"  [{m.id:>4}] {m.titre_jo:<50} {social}")
+        print(f"  [{m.id:>4}] {m.titre_jo}")
 
 
 def _questions(session, n: int) -> None:
