@@ -1,9 +1,15 @@
 #!/usr/bin/env python
 r"""Find questions similar to a given input from the Qdrant questions collection.
 
-Embeds the query question and searches the Qdrant collection populated by
-ingest_questions.py. Results above the similarity threshold are returned,
-sorted by cosine similarity (descending).
+Embeds the query and searches the Qdrant collection populated by
+embed_questions.py (DB-sourced) or ingest_questions.py (file-sourced).
+Results above the similarity threshold are returned, sorted by cosine
+similarity (descending).
+
+Query input (mutually exclusive):
+  --file        Path to a question file (.docx, .pdf, .txt)
+  --text        Raw question text
+  --question-id Question ID as stored in PostgreSQL (e.g. AN-17-QE-12345)
 
 Usage:
   # Search by file
@@ -12,13 +18,17 @@ Usage:
   # Search by raw text
   python scripts/find_similar_questions.py --text "Ma question porte sur les aides au logement..."
 
-  # Custom threshold and output file
-  python scripts/find_similar_questions.py --file my_question.docx --threshold 0.85 --output results.json
+  # Search by DB question ID, find similar answered questions
+  python scripts/find_similar_questions.py \
+    --question-id AN-17-QE-12345 \
+    --collection questions_opendata \
+    --filter-status REPONDU \
+    --threshold 0.70
 
 Requires:
   - SOCLE_IA_API_KEY environment variable set
   - LLM_BASE_URL (or EMBEDDINGS_URL) environment variable set
-  - A populated questions collection (run ingest_questions.py first)
+  - A populated Qdrant collection (run embed_questions.py first)
 """
 
 from __future__ import annotations
@@ -29,15 +39,17 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from qe import db
 from qe.clients.embedding import EmbeddingClient
 from qe.clients.qdrant import QdrantClient
 from qe.config import get_settings, require_api_key
 from qe.documents import read_document
+from qe.models import Question
 
-DEFAULT_COLLECTION = "questions"
+DEFAULT_COLLECTION = "questions_opendata"
 DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_TOP_K = 10
-DEFAULT_THRESHOLD = 0.80
+DEFAULT_THRESHOLD = 0.75
 
 
 @dataclass(frozen=True)
@@ -50,7 +62,20 @@ class SearchConfig:
     api_key: str
     top_k: int
     threshold: float
+    filter_status: str | None
     output: Path | None
+
+
+def _lookup_question_text(question_id: str) -> str:
+    """Fetch texte_question from PostgreSQL for the given question ID."""
+    with db.get_session() as session:
+        question = session.get(Question, question_id)
+    if question is None:
+        print(
+            f"Error: question '{question_id}' not found in database.", file=sys.stderr
+        )
+        sys.exit(1)
+    return question.texte_question
 
 
 def parse_args() -> SearchConfig:
@@ -67,10 +92,15 @@ def parse_args() -> SearchConfig:
         "--text",
         help="Question text to search for (as a string).",
     )
+    input_group.add_argument(
+        "--question-id",
+        metavar="ID",
+        help="Question ID from PostgreSQL (e.g. AN-17-QE-12345). Looks up texte_question from the DB.",
+    )
     parser.add_argument(
         "--collection",
         default=DEFAULT_COLLECTION,
-        help="Qdrant collection name.",
+        help=f"Qdrant collection name (default: {DEFAULT_COLLECTION}).",
     )
     parser.add_argument(
         "--qdrant-url",
@@ -92,7 +122,16 @@ def parse_args() -> SearchConfig:
         "--threshold",
         type=float,
         default=DEFAULT_THRESHOLD,
-        help="Minimum cosine similarity (0–1) to include in results.",
+        help="Minimum cosine similarity (0–1) to include in results (default: 0.75).",
+    )
+    parser.add_argument(
+        "--filter-status",
+        default=None,
+        metavar="STATUS",
+        help=(
+            "Restrict search to questions with this etat_question "
+            "(e.g. REPONDU, EN_COURS). Default: no filter."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -110,6 +149,11 @@ def parse_args() -> SearchConfig:
         if not question_text:
             print(f"Error: {args.file} is empty.", file=sys.stderr)
             sys.exit(1)
+    elif args.question_id:
+        question_text = _lookup_question_text(args.question_id).strip()
+        if not question_text:
+            print(f"Error: question '{args.question_id}' has no text.", file=sys.stderr)
+            sys.exit(1)
     else:
         question_text = args.text.strip()
         if not question_text:
@@ -125,6 +169,7 @@ def parse_args() -> SearchConfig:
         api_key=api_key,
         top_k=args.top_k,
         threshold=args.threshold,
+        filter_status=args.filter_status,
         output=args.output,
     )
 
@@ -136,6 +181,7 @@ def find_similar(
     qdrant: QdrantClient,
     top_k: int,
     threshold: float,
+    filter_status: str | None = None,
 ) -> list[dict]:
     """Embed the query and return similar questions above the threshold.
 
@@ -146,13 +192,20 @@ def find_similar(
         qdrant: Qdrant REST client.
         top_k: Number of nearest neighbours to retrieve from Qdrant.
         threshold: Minimum cosine similarity to include in output.
+        filter_status: If set, restrict results to this etat_question value.
 
     Returns:
-        List of result dicts with keys: question_id, question_path,
-        question_preview, similarity. Sorted by similarity descending.
+        List of result dicts sorted by similarity descending.
     """
     vector = embedder.embed(question_text)
-    candidates = qdrant.search(collection, vector, top_k)
+
+    qdrant_filter = None
+    if filter_status:
+        qdrant_filter = {
+            "must": [{"key": "etat_question", "match": {"value": filter_status}}]
+        }
+
+    candidates = qdrant.search(collection, vector, top_k, filter=qdrant_filter)
 
     results = []
     for candidate in candidates:
@@ -163,8 +216,15 @@ def find_similar(
         results.append(
             {
                 "question_id": payload.get("question_id", ""),
-                "question_path": payload.get("question_path", ""),
-                "question_preview": payload.get("question_preview", ""),
+                "etat_question": payload.get("etat_question", ""),
+                "source": payload.get("source", ""),
+                "auteur_nom": payload.get("auteur_nom"),
+                "ministre_attributaire_libelle": payload.get(
+                    "ministre_attributaire_libelle"
+                ),
+                "date_publication_jo": payload.get("date_publication_jo"),
+                "texte_preview": payload.get("texte_preview")
+                or payload.get("question_preview", ""),
                 "similarity": round(score, 6),
             }
         )
@@ -189,6 +249,7 @@ def main() -> None:
         qdrant=qdrant,
         top_k=config.top_k,
         threshold=config.threshold,
+        filter_status=config.filter_status,
     )
 
     output_json = json.dumps(results, ensure_ascii=False, indent=2)
