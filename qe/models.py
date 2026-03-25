@@ -125,6 +125,9 @@ class Question(Base):
     auteur_grp_pol: Mapped[str | None] = mapped_column(Text, nullable=True)
     auteur_circonscription: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # --- objet (titre court, AN uniquement) ---
+    objet: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # --- indexation AN (None si source=SENAT) ---
     rubrique: Mapped[str | None] = mapped_column(Text, nullable=True)
     rubrique_ta: Mapped[str | None] = mapped_column(Text, nullable=True)
