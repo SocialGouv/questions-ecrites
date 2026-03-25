@@ -2,31 +2,16 @@
 """Cluster parliamentary questions by semantic similarity.
 
 Fetches question embeddings from Qdrant (populated by embed_questions.py) and
-groups them into clusters using one of two algorithms:
-
-  allotissement (default)
-    Agglomerative clustering with average linkage and cosine distance.
-    Tunable via --threshold (cosine *distance*, so 1 − similarity).
-    Use this for grouping near-identical unanswered questions so that a single
-    response can address all of them at once.
-
-  loose
-    HDBSCAN with cosine metric.  No threshold required — the algorithm finds
-    natural density peaks automatically.  Use this for broad thematic grouping
-    in the UI.  Questions that don't fit any cluster (noise) are excluded.
-
-Only EN_COURS questions are fetched by default (use --filter-status to change).
+groups them using agglomerative clustering with average linkage and cosine distance.
+Questions whose cosine similarity exceeds --threshold are placed in the same cluster.
 Singleton clusters and noise points are excluded from the output.
 
 Usage:
-    # Strict grouping for allotissement (default)
+    # Default threshold (0.90)
     poetry run python scripts/cluster_questions.py
 
     # Adjust strictness
     poetry run python scripts/cluster_questions.py --threshold 0.85
-
-    # Thematic grouping
-    poetry run python scripts/cluster_questions.py --mode loose --min-cluster-size 3
 
     # Custom collection / output
     poetry run python scripts/cluster_questions.py \\
@@ -61,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_COLLECTION = "questions_opendata"
 DEFAULT_QDRANT_URL = "http://localhost:6333"
-DEFAULT_THRESHOLD = 0.90  # cosine *similarity* threshold for allotissement
+DEFAULT_THRESHOLD = 0.90  # cosine *similarity* threshold
 DEFAULT_MIN_CLUSTER_SIZE = 2
 
 
@@ -69,10 +54,9 @@ DEFAULT_MIN_CLUSTER_SIZE = 2
 class ClusterConfig:
     collection: str
     qdrant_url: str
-    mode: str  # "allotissement" | "loose"
-    threshold: float  # similarity threshold (allotissement only)
+    threshold: float  # cosine similarity threshold
     min_cluster_size: int
-    filter_status: str
+    embedding_model: str  # only cluster questions embedded with this model
     output: Path
 
 
@@ -93,69 +77,58 @@ def _parse_args() -> ClusterConfig:
         help="Base URL for Qdrant (default: http://localhost:6333).",
     )
     parser.add_argument(
-        "--mode",
-        choices=["allotissement", "loose"],
-        default="allotissement",
-        help="Clustering mode: 'allotissement' (strict) or 'loose' (thematic). Default: allotissement.",
-    )
-    parser.add_argument(
         "--threshold",
         type=float,
         default=DEFAULT_THRESHOLD,
-        help=(
-            "Minimum cosine *similarity* for allotissement mode (default: 0.90). "
-            "Ignored for loose mode."
-        ),
+        help=f"Minimum cosine *similarity* to place questions in the same cluster (default: {DEFAULT_THRESHOLD}).",
     )
     parser.add_argument(
         "--min-cluster-size",
         type=int,
         default=DEFAULT_MIN_CLUSTER_SIZE,
-        help=(
-            f"Minimum number of questions per cluster (default: {DEFAULT_MIN_CLUSTER_SIZE}). "
-            "In allotissement mode, singletons are always excluded regardless of this value."
-        ),
+        help=f"Minimum number of questions per cluster (default: {DEFAULT_MIN_CLUSTER_SIZE}).",
     )
     parser.add_argument(
-        "--filter-status",
-        default="EN_COURS",
-        metavar="STATUS",
-        help="Fetch only questions with this etat_question (default: EN_COURS).",
+        "--embedding-model",
+        default="BAAI/bge-m3",
+        metavar="MODEL",
+        help=("Only cluster questions embedded with this model (e.g. 'BAAI/bge-m3')"),
     )
     parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Output JSON file path (default: data/clusters_{mode}.json).",
+        help="Output JSON file path (default: data/clusters.json).",
     )
     args = parser.parse_args()
 
-    output = args.output or Path(f"data/clusters_{args.mode}.json")
+    output = args.output or Path("data/clusters.json")
 
     return ClusterConfig(
         collection=args.collection,
         qdrant_url=args.qdrant_url,
-        mode=args.mode,
         threshold=args.threshold,
         min_cluster_size=max(2, args.min_cluster_size),
-        filter_status=args.filter_status,
+        embedding_model=args.embedding_model,
         output=output,
     )
 
 
 def _fetch_points(
-    qdrant: QdrantClient, collection: str, filter_status: str
+    qdrant: QdrantClient,
+    collection: str,
+    embedding_model: str,
 ) -> list[dict]:
-    """Scroll all points for the given etat_question from the collection."""
+    """Scroll all points matching the given filters from the collection."""
     qdrant_filter = {
-        "must": [{"key": "etat_question", "match": {"value": filter_status}}]
+        "must": [{"key": "embedding_model", "match": {"value": embedding_model}}]
     }
     points = qdrant.scroll_all(collection, filter=qdrant_filter, with_vectors=True)
     logger.info(
-        "Fetched %d point(s) from '%s' (status=%s).",
+        "Fetched %d point(s) from '%s' (model=%s).",
         len(points),
         collection,
-        filter_status,
+        embedding_model,
     )
     return points
 
@@ -193,20 +166,6 @@ def _run_allotissement(
         labels = np.where(np.isin(labels, list(small)), -1, labels)
 
     return labels
-
-
-def _run_loose(matrix: np.ndarray, min_cluster_size: int) -> np.ndarray:
-    """HDBSCAN with cosine metric.
-
-    Returns an array of integer cluster labels; −1 = noise / unclustered.
-    """
-    from sklearn.cluster import HDBSCAN
-
-    model = HDBSCAN(
-        min_cluster_size=min_cluster_size,
-        metric="cosine",
-    )
-    return model.fit_predict(matrix)
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -283,7 +242,7 @@ def cluster_questions(config: ClusterConfig) -> list[dict]:
     """Main clustering logic.  Returns the list of cluster dicts."""
     qdrant = QdrantClient(config.qdrant_url)
 
-    points = _fetch_points(qdrant, config.collection, config.filter_status)
+    points = _fetch_points(qdrant, config.collection, config.embedding_model)
     if len(points) < 2:
         logger.warning("Need at least 2 points to cluster; found %d.", len(points))
         return []
@@ -299,11 +258,7 @@ def cluster_questions(config: ClusterConfig) -> list[dict]:
     vectors = np.array([p["vector"] for p in valid_points], dtype=np.float32)
     logger.info("Matrix shape: %s", vectors.shape)
 
-    logger.info("Running %s clustering...", config.mode)
-    if config.mode == "allotissement":
-        labels = _run_allotissement(vectors, config.threshold, config.min_cluster_size)
-    else:
-        labels = _run_loose(vectors, config.min_cluster_size)
+    labels = _run_allotissement(vectors, config.threshold, config.min_cluster_size)
 
     noise_count = int((labels == -1).sum())
     cluster_count = len(set(labels) - {-1})
@@ -326,9 +281,13 @@ def main() -> None:
     config.output.write_text(output_json, encoding="utf-8")
     logger.info("Wrote %d cluster(s) to %s.", len(clusters), config.output)
 
-    threshold = config.threshold if config.mode == "allotissement" else None
-    run_id = save_clusters(config.mode, threshold, clusters)
-    logger.info("Saved cluster run to database (run_id=%d).", run_id)
+    total_questions = sum(c["size"] for c in clusters)
+    save_clusters(clusters)
+    logger.info(
+        "Saved %d question(s) in %d cluster(s) to database.",
+        total_questions,
+        len(clusters),
+    )
 
 
 if __name__ == "__main__":

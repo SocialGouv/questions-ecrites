@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingClient:
@@ -17,6 +21,9 @@ class EmbeddingClient:
         self.timeout = timeout
 
     def embed(self, text: str) -> list[float]:
+        return self.embed_batch([text])[0]
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
         response = requests.post(
             self.url,
             headers={
@@ -25,10 +32,19 @@ class EmbeddingClient:
             },
             json={
                 "model": self.model,
-                "input": text,
+                "input": texts,
             },
             timeout=self.timeout,
         )
-        response.raise_for_status()
+        if not response.ok:
+            logger.error(
+                "Embedding API error %d for %d text(s): %s",
+                response.status_code,
+                len(texts),
+                response.text[:500],
+            )
+            response.raise_for_status()
         data = response.json()
-        return data["data"][0]["embedding"]
+        return [
+            item["embedding"] for item in sorted(data["data"], key=lambda x: x["index"])
+        ]
