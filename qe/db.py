@@ -9,8 +9,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from qe.models import ChunkCache, IngestManifest
-
+from qe.models import (
+    ChunkCache,
+    IngestManifest,
+    QuestionClusterMember,
+    QuestionClusterRun,
+)
 
 # ---------------------------------------------------------------------------
 # Engine + session factory
@@ -173,6 +177,42 @@ def delete_chunk_cache(strategy: str, document_hash: str) -> None:
                 ChunkCache.document_hash == document_hash,
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# question_cluster_runs / question_cluster_members
+# ---------------------------------------------------------------------------
+
+
+def save_clusters(
+    mode: str,
+    threshold: float | None,
+    clusters: list[dict],
+) -> int:
+    """Persist a cluster run and all its members.  Returns the new run id."""
+    total_questions = sum(c["size"] for c in clusters)
+    with get_session() as session:
+        run = QuestionClusterRun(
+            mode=mode,
+            threshold=threshold,
+            total_clusters=len(clusters),
+            total_questions=total_questions,
+        )
+        session.add(run)
+        session.flush()  # populate run.id before bulk insert
+
+        members = [
+            QuestionClusterMember(
+                run_id=run.id,
+                cluster_id=cluster["cluster_id"],
+                question_id=q["question_id"],
+                similarity_to_centroid=q["similarity_to_centroid"],
+            )
+            for cluster in clusters
+            for q in cluster["questions"]
+        ]
+        session.add_all(members)
+        return run.id
 
 
 def delete_chunk_cache_for_document_hashes(document_hashes: Sequence[str]) -> int:

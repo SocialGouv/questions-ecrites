@@ -50,6 +50,7 @@ import numpy as np
 from sklearn.cluster import AgglomerativeClustering
 
 from qe.clients.qdrant import QdrantClient
+from qe.db import save_clusters
 
 logging.basicConfig(
     level=logging.INFO,
@@ -324,6 +325,10 @@ def main() -> None:
     config.output.parent.mkdir(parents=True, exist_ok=True)
     config.output.write_text(output_json, encoding="utf-8")
     logger.info("Wrote %d cluster(s) to %s.", len(clusters), config.output)
+
+    threshold = config.threshold if config.mode == "allotissement" else None
+    run_id = save_clusters(config.mode, threshold, clusters)
+    logger.info("Saved cluster run to database (run_id=%d).", run_id)
 
 
 if __name__ == "__main__":
