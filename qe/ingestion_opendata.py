@@ -71,6 +71,7 @@ class ParsedQuestion:
     page_jo: int | None
     ministre_libelle: str | None  # ministreJO label
     auteur_nom: str | None  # parlementaire (full string)
+    objet: str | None  # <Objet> short title
     texte_question: str
     # Response fields — None when etat_question == "EN_COURS"
     texte_reponse: str | None = None
@@ -141,6 +142,7 @@ def _parse_question_element(q_elem: Element) -> ParsedQuestion | None:
 
     ministre_jo = (q_elem.findtext("ministreJO") or "").strip() or None
     parlementaire = (q_elem.findtext("parlementaire") or "").strip() or None
+    objet = (q_elem.findtext("Objet") or "").strip() or None
     texte_raw = (q_elem.findtext("texteQuestion") or "").strip()
     texte = _clean_texte(texte_raw) if texte_raw else ""
 
@@ -155,6 +157,7 @@ def _parse_question_element(q_elem: Element) -> ParsedQuestion | None:
         page_jo=page_jo,
         ministre_libelle=ministre_jo,
         auteur_nom=parlementaire,
+        objet=objet,
         texte_question=texte,
     )
 
@@ -338,6 +341,7 @@ def ingest_questions(
                 "ministre_attributaire_id": min_id,
                 "ministre_attributaire_libelle": pq.ministre_libelle,
                 "auteur_nom": pq.auteur_nom,
+                "objet": pq.objet,
                 "texte_question": pq.texte_question,
                 "texte_reponse": pq.texte_reponse,
                 "date_reponse_jo": pq.date_reponse_jo,
@@ -378,6 +382,11 @@ def ingest_questions(
                     "page_jo": func.coalesce(
                         _existing["page_jo"],
                         insert_stmt.excluded.page_jo,
+                    ),
+                    # Static fields: update if incoming is not NULL
+                    "objet": func.coalesce(
+                        insert_stmt.excluded.objet,
+                        literal_column("questions.objet"),
                     ),
                     # Response fields: always update
                     "texte_reponse": insert_stmt.excluded.texte_reponse,
