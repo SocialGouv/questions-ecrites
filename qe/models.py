@@ -248,3 +248,42 @@ class IngestCursor(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# ---------------------------------------------------------------------------
+# Question clustering tables
+# ---------------------------------------------------------------------------
+
+
+class QuestionClusterRun(Base):
+    __tablename__ = "question_cluster_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mode: Mapped[str] = mapped_column(Text, nullable=False)  # allotissement | loose
+    threshold: Mapped[float | None] = mapped_column(nullable=True)  # allotissement only
+    total_clusters: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_questions: Mapped[int] = mapped_column(Integer, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    members: Mapped[list[QuestionClusterMember]] = relationship(
+        "QuestionClusterMember", back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class QuestionClusterMember(Base):
+    __tablename__ = "question_cluster_members"
+
+    run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("question_cluster_runs.id"), primary_key=True
+    )
+    question_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("questions.id"), primary_key=True
+    )
+    cluster_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    similarity_to_centroid: Mapped[float] = mapped_column(nullable=False)
+
+    run: Mapped[QuestionClusterRun] = relationship(
+        "QuestionClusterRun", back_populates="members"
+    )

@@ -20,6 +20,8 @@ from qe.models import (
     Ministere,
     Question,
     QuestionAttribution,
+    QuestionClusterMember,
+    QuestionClusterRun,
     QuestionStateChange,
 )
 
@@ -40,6 +42,8 @@ def _counts(session) -> None:
         ("question_state_changes", QuestionStateChange),
         ("question_attributions", QuestionAttribution),
         ("ingest_cursors", IngestCursor),
+        ("question_cluster_runs", QuestionClusterRun),
+        ("question_cluster_members", QuestionClusterMember),
     ]
     for name, model in tables:
         count = session.execute(select(func.count()).select_from(model)).scalar()
@@ -126,6 +130,31 @@ def _questions_by_ministry(session) -> None:
         print(f"  {count:>6}  {label}")
 
 
+def _cluster_runs(session, n: int) -> None:
+    _section(f"question_cluster_runs — last {n} runs")
+    rows = (
+        session.execute(
+            select(QuestionClusterRun)
+            .order_by(QuestionClusterRun.computed_at.desc())
+            .limit(n)
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        print("  (empty)")
+        return
+    for r in rows:
+        threshold_str = (
+            f"threshold={r.threshold}" if r.threshold is not None else "threshold=n/a"
+        )
+        print(
+            f"  run_id={r.id:<6} mode={r.mode:<15} {threshold_str:<20}"
+            f" clusters={r.total_clusters:<6} questions={r.total_questions:<6}"
+            f" computed_at={r.computed_at}"
+        )
+
+
 def _cursors(session) -> None:
     _section("ingest_cursors")
     rows = (
@@ -158,6 +187,7 @@ def main() -> None:
         _questions_by_state(session)
         _questions_by_source(session)
         _questions_by_ministry(session)
+        _cluster_runs(session, args.rows)
         _cursors(session)
 
     print(f"\n{_SEP}\n")
