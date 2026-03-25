@@ -12,8 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from qe.models import (
     ChunkCache,
     IngestManifest,
-    QuestionClusterMember,
-    QuestionClusterRun,
+    QuestionCluster,
 )
 
 # ---------------------------------------------------------------------------
@@ -180,39 +179,24 @@ def delete_chunk_cache(strategy: str, document_hash: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# question_cluster_runs / question_cluster_members
+# question_clusters
 # ---------------------------------------------------------------------------
 
 
-def save_clusters(
-    mode: str,
-    threshold: float | None,
-    clusters: list[dict],
-) -> int:
-    """Persist a cluster run and all its members.  Returns the new run id."""
-    total_questions = sum(c["size"] for c in clusters)
+def save_clusters(clusters: list[dict]) -> None:
+    """Replace all question clusters with the new results."""
     with get_session() as session:
-        run = QuestionClusterRun(
-            mode=mode,
-            threshold=threshold,
-            total_clusters=len(clusters),
-            total_questions=total_questions,
-        )
-        session.add(run)
-        session.flush()  # populate run.id before bulk insert
-
-        members = [
-            QuestionClusterMember(
-                run_id=run.id,
-                cluster_id=cluster["cluster_id"],
+        session.execute(delete(QuestionCluster))
+        rows = [
+            QuestionCluster(
                 question_id=q["question_id"],
+                cluster_id=cluster["cluster_id"],
                 similarity_to_centroid=q["similarity_to_centroid"],
             )
             for cluster in clusters
             for q in cluster["questions"]
         ]
-        session.add_all(members)
-        return run.id
+        session.add_all(rows)
 
 
 def delete_chunk_cache_for_document_hashes(document_hashes: Sequence[str]) -> int:

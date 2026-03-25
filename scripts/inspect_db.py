@@ -20,8 +20,7 @@ from qe.models import (
     Ministere,
     Question,
     QuestionAttribution,
-    QuestionClusterMember,
-    QuestionClusterRun,
+    QuestionCluster,
     QuestionStateChange,
 )
 
@@ -42,8 +41,7 @@ def _counts(session) -> None:
         ("question_state_changes", QuestionStateChange),
         ("question_attributions", QuestionAttribution),
         ("ingest_cursors", IngestCursor),
-        ("question_cluster_runs", QuestionClusterRun),
-        ("question_cluster_members", QuestionClusterMember),
+        ("question_clusters", QuestionCluster),
     ]
     for name, model in tables:
         count = session.execute(select(func.count()).select_from(model)).scalar()
@@ -131,28 +129,28 @@ def _questions_by_ministry(session) -> None:
 
 
 def _cluster_runs(session, n: int) -> None:
-    _section(f"question_cluster_runs — last {n} runs")
-    rows = (
-        session.execute(
-            select(QuestionClusterRun)
-            .order_by(QuestionClusterRun.computed_at.desc())
-            .limit(n)
-        )
-        .scalars()
-        .all()
-    )
-    if not rows:
+    _section("question_clusters — summary")
+    total_questions = session.execute(
+        select(func.count()).select_from(QuestionCluster)
+    ).scalar()
+    total_clusters = session.execute(
+        select(func.count(QuestionCluster.cluster_id.distinct()))
+    ).scalar()
+    if total_questions == 0:
         print("  (empty)")
         return
-    for r in rows:
-        threshold_str = (
-            f"threshold={r.threshold}" if r.threshold is not None else "threshold=n/a"
-        )
-        print(
-            f"  run_id={r.id:<6} mode={r.mode:<15} {threshold_str:<20}"
-            f" clusters={r.total_clusters:<6} questions={r.total_questions:<6}"
-            f" computed_at={r.computed_at}"
-        )
+    print(f"  {total_clusters} cluster(s)  /  {total_questions} question(s)")
+
+    # Show the n largest clusters.
+    rows = session.execute(
+        select(QuestionCluster.cluster_id, func.count().label("size"))
+        .group_by(QuestionCluster.cluster_id)
+        .order_by(func.count().desc())
+        .limit(n)
+    ).all()
+    print(f"\n  Top {n} cluster(s) by size:")
+    for cluster_id, size in rows:
+        print(f"    cluster_id={cluster_id:<6} size={size}")
 
 
 def _cursors(session) -> None:
