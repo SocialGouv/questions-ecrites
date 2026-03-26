@@ -51,6 +51,29 @@ _QE_HEADER_RE = re.compile(
     re.UNICODE,
 )
 
+# ---------------------------------------------------------------------------
+# Legislature lookup — same numbering for AN and SENAT.
+# Sorted descending so the first matching entry wins.
+# ---------------------------------------------------------------------------
+_LEGISLATURE_START_DATES: list[tuple[date, int]] = [
+    (date(2024, 7, 18), 17),  # 17th: snap-election result
+    (date(2022, 6, 22), 16),  # 16th
+    (date(2017, 6, 21), 15),  # 15th
+    (date(2012, 6, 20), 14),  # 14th
+]
+
+
+def _legislature_from_date(d: date) -> int:
+    """Return the legislature number for a question published on date *d*."""
+    for start, leg in _LEGISLATURE_START_DATES:
+        if d >= start:
+            return leg
+    return 13  # fallback for very old data
+
+
+# Strip HTML tags from legacy SENAT TexteQ / Texte_Reponse fields.
+_HTML_TAG_RE = re.compile(r"<[^>]+>", re.DOTALL)
+
 
 # ---------------------------------------------------------------------------
 # Intermediate data structures
@@ -248,6 +271,157 @@ def _parse_rep_section(section: Element) -> list[ParsedQuestion]:
             pq.page_jo = None
 
             results.append(pq)
+
+    return results
+
+
+def parse_senat_legacy_xml(xml_bytes: bytes) -> list[ParsedQuestion]:  # noqa: C901
+    """Parse a legacy SENAT *SEQ*.xml file (pre-REDIF format).
+
+    The root element is ``<QuestionsPubliees>`` (not ``<QuestionsPublieesAS>``).
+    Elements use PascalCase (``<Question>``, ``<NumQ>``, ``<TexteQ>`` …) rather
+    than the camelCase used in REDIF files.
+
+    Sections handled:
+    - ``<Section part="QE">``  → ``etat_question = "EN_COURS"``
+    - ``<Section part="REP">`` → ``etat_question = "REPONDU"``; each
+      ``<Question_Reponse>`` may contain multiple ``<Question>`` elements
+      sharing one ``<Reponse>`` (joint answers).
+
+    Legislature is derived from the question publication date using
+    ``_legislature_from_date()``.
+    """
+    try:
+        root = fromstring(xml_bytes)
+    except ParseError as exc:
+        logger.error("XML parse error (legacy SENAT): %s", exc)
+        return []
+
+    # Root attributes: DateJO="2024-03-07" NumJO="20240010"
+    root_date = _parse_date(root.attrib.get("DateJO"))
+    num_jo = (root.attrib.get("NumJO") or "").strip() or None
+
+    def _parse_legacy_question(q_elem: Element) -> ParsedQuestion | None:
+        gestion = q_elem.find("Gestion")
+        if gestion is None:
+            return None
+
+        num_str = (gestion.findtext("NumQ") or "").strip()
+        if not num_str:
+            return None
+
+        date_q = _parse_date(gestion.findtext("DateQ")) or root_date
+        if date_q is None:
+            logger.debug("Skipping legacy SENAT question with no date")
+            return None
+
+        legislature = _legislature_from_date(date_q)
+        numero = int(num_str)
+        qid = f"SENAT-{legislature}-QE-{numero}"
+
+        page_str = (gestion.findtext("PageJO") or "").strip()
+        page_jo = int(page_str) if page_str.isdigit() else None
+
+        objet = (gestion.findtext("Objet") or "").strip() or None
+
+        auteur = gestion.find("Auteur")
+        if auteur is not None:
+            nom = (auteur.findtext("Nom") or "").strip()
+            prenom = (auteur.findtext("Prenom") or "").strip()
+            civ = (auteur.findtext("Civilite") or "").strip()
+            parts = [p for p in (civ, prenom, nom) if p]
+            auteur_nom: str | None = " ".join(parts) or None
+        else:
+            auteur_nom = None
+
+        dest = gestion.find("Destinataire")
+        ministre_libelle: str | None = None
+        if dest is not None:
+            ministre_libelle = (dest.findtext("TitreMinistere") or "").strip() or None
+
+        texte_raw = (q_elem.findtext("TexteQ") or "").strip()
+        texte = _HTML_TAG_RE.sub("", texte_raw).strip() if texte_raw else ""
+
+        return ParsedQuestion(
+            id=qid,
+            numero_question=numero,
+            type="QE",
+            source="SENAT",
+            legislature=legislature,
+            etat_question="EN_COURS",  # overridden by caller for REP section
+            date_publication_jo=date_q,
+            page_jo=page_jo,
+            ministre_libelle=ministre_libelle,
+            auteur_nom=auteur_nom,
+            objet=objet,
+            texte_question=texte,
+        )
+
+    results: list[ParsedQuestion] = []
+
+    for section in root.findall("Section"):
+        part = section.attrib.get("part", "")
+
+        if part == "QE":
+            for q_elem in section.findall("Question"):
+                pq = _parse_legacy_question(q_elem)
+                if pq:
+                    results.append(pq)
+
+        elif part == "REP":
+            for entry in section.findall("Question_Reponse"):
+                # Parse response metadata
+                rep_elem = entry.find("Reponse")
+                reponse_id: str | None = None
+                texte_rep: str | None = None
+                date_rep: date | None = None
+                page_rep: int | None = None
+                ministre_rep: str | None = None
+
+                if rep_elem is not None:
+                    rep_gestion = rep_elem.find("Gestion")
+                    if rep_gestion is not None:
+                        page_str = (rep_gestion.findtext("PageJO") or "").strip()
+                        page_rep = int(page_str) if page_str.isdigit() else None
+                        min_rep = rep_gestion.find("MinReponse")
+                        if min_rep is not None:
+                            ministre_rep = (
+                                min_rep.findtext("TitreMinistereJO") or ""
+                            ).strip() or None
+
+                    texte_raw = (rep_elem.findtext("Texte_Reponse") or "").strip()
+                    texte_rep = (
+                        _HTML_TAG_RE.sub("", texte_raw).strip() if texte_raw else None
+                    )
+
+                    if num_jo and page_rep is not None:
+                        reponse_id = f"SENAT-{num_jo}-{page_rep}"
+
+                # Parse each question in this joint-answer group
+                questions_elem = entry.find("Questions")
+                q_elems = (
+                    questions_elem.findall("Question")
+                    if questions_elem is not None
+                    else entry.findall("Question")
+                )
+                for q_elem in q_elems:
+                    pq = _parse_legacy_question(q_elem)
+                    if not pq:
+                        continue
+
+                    pq.etat_question = "REPONDU"
+                    pq.reponse_id = reponse_id
+                    pq.texte_reponse = texte_rep
+                    pq.no_publication = num_jo
+                    pq.date_reponse_jo = date_rep
+                    pq.page_reponse_jo = page_rep
+                    if ministre_rep:
+                        pq.ministre_libelle = ministre_rep
+                    # REP entries don't carry the original publication date
+                    pq.date_publication_jo = None
+                    pq.page_jo = None
+
+                    results.append(pq)
 
     return results
 
@@ -466,30 +640,58 @@ def ingest_taz_file(taz_path: Path, *, ingest_source: str = "opendata") -> Inges
 
     try:
         with tarfile.open(taz_path) as tar:
-            redif_member = next(
-                (m for m in tar.getmembers() if m.name.startswith("REDIF_")),
-                None,
-            )
-            if redif_member is None:
-                logger.warning("No REDIF_*.xml found in %s", taz_path.name)
-                return IngestStats(taz_file=taz_path.name)
+            members = tar.getmembers()
 
-            f = tar.extractfile(redif_member)
-            if f is None:
+            redif_member = next(
+                (m for m in members if m.name.startswith("REDIF_")), None
+            )
+            senat_legacy = next(
+                (m for m in members if re.match(r"SEQ\d+\.xml$", m.name)), None
+            )
+            an_legacy = next(
+                (m for m in members if m.name.startswith("XML1JO_AN")), None
+            )
+
+            if redif_member is not None:
+                f = tar.extractfile(redif_member)
+                if f is None:
+                    logger.warning(
+                        "Could not read %s from %s",
+                        redif_member.name,
+                        taz_path.name,
+                    )
+                    return IngestStats(taz_file=taz_path.name)
+                xml_bytes = f.read()
+                parser = parse_redif_xml
+
+            elif senat_legacy is not None:
+                f = tar.extractfile(senat_legacy)
+                if f is None:
+                    logger.warning(
+                        "Could not read %s from %s",
+                        senat_legacy.name,
+                        taz_path.name,
+                    )
+                    return IngestStats(taz_file=taz_path.name)
+                xml_bytes = f.read()
+                parser = parse_senat_legacy_xml
+
+            elif an_legacy is not None:
                 logger.warning(
-                    "Could not read %s from %s",
-                    redif_member.name,
+                    "Skipping %s: old AN format (XML1JO) contains no question text",
                     taz_path.name,
                 )
                 return IngestStats(taz_file=taz_path.name)
 
-            xml_bytes = f.read()
+            else:
+                logger.warning("No parseable XML found in %s", taz_path.name)
+                return IngestStats(taz_file=taz_path.name)
 
     except tarfile.TarError as exc:
         logger.error("Failed to open archive %s: %s", taz_path.name, exc)
         return IngestStats(taz_file=taz_path.name)
 
-    questions = parse_redif_xml(xml_bytes)
+    questions = parser(xml_bytes)
     logger.info("  %d questions parsed", len(questions))
 
     stats = ingest_questions(questions, ingest_source=ingest_source)
