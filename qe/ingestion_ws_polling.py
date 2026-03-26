@@ -52,6 +52,7 @@ from qe.models import (
     Question,
     QuestionAttribution,
     QuestionStateChange,
+    Reponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -201,17 +202,16 @@ def _upsert_ws_question(
             min_cache_by_id,
         )
 
-    reponse_id: int | None = None
-    texte_reponse: str | None = None
-    date_reponse: date | None = None
-    page_reponse: int | None = None
-    reponse_libelle: str | None = None
-    if wq.reponse is not None:
-        texte_reponse = wq.reponse.texte_reponse
-        date_reponse = wq.reponse.date_jo
-        page_reponse = wq.reponse.page_jo
+    reponse_fk: str | None = None
+    if wq.reponse is not None and wq.reponse.date_jo and wq.reponse.page_jo:
+        # WS does not provide noPublication; use ISO date as stand-in
+        no_pub = wq.reponse.date_jo.isoformat()
+        reponse_fk = f"{wq.source}-{no_pub}-{wq.reponse.page_jo}"
+
+        min_rep_id: int | None = None
+        min_rep_libelle: str | None = None
         if wq.reponse.ministre_reponse is not None:
-            reponse_id = _get_or_create_ministere(
+            min_rep_id = _get_or_create_ministere(
                 session,
                 wq.reponse.ministre_reponse.id,
                 wq.reponse.ministre_reponse.titre_jo,
@@ -219,7 +219,26 @@ def _upsert_ws_question(
                 min_cache_by_titre,
                 min_cache_by_id,
             )
-            reponse_libelle = wq.reponse.ministre_reponse.titre_jo
+            min_rep_libelle = wq.reponse.ministre_reponse.titre_jo
+
+        rep_stmt = (
+            pg_insert(Reponse)
+            .values(
+                id=reponse_fk,
+                source=wq.source,
+                no_publication=no_pub,
+                texte_reponse=wq.reponse.texte_reponse or "",
+                ministre_reponse_id=min_rep_id,
+                ministre_reponse_libelle=min_rep_libelle,
+                date_reponse_jo=wq.reponse.date_jo,
+                page_reponse_jo=wq.reponse.page_jo,
+            )
+            .on_conflict_do_update(
+                index_elements=["id"],
+                set_={"updated_at": func.now()},
+            )
+        )
+        session.execute(rep_stmt)
 
     analyses: list[str] | None = None
     if wq.indexation_an is not None:
@@ -248,11 +267,7 @@ def _upsert_ws_question(
         "auteur_grp_pol": wq.auteur.grp_pol if wq.auteur else None,
         "auteur_circonscription": wq.auteur.circonscription if wq.auteur else None,
         "texte_question": wq.texte_question,
-        "texte_reponse": texte_reponse,
-        "date_reponse_jo": date_reponse,
-        "page_reponse_jo": page_reponse,
-        "ministre_reponse_id": reponse_id,
-        "ministre_reponse_libelle": reponse_libelle,
+        "reponse_id": reponse_fk,
         # Indexation — AN
         "rubrique": wq.indexation_an.rubrique if wq.indexation_an else None,
         "rubrique_ta": wq.indexation_an.rubrique_ta if wq.indexation_an else None,
@@ -294,12 +309,8 @@ def _upsert_ws_question(
                 _existing["page_jo"],
                 insert_stmt.excluded.page_jo,
             ),
-            # Response fields: always overwrite (WS is authoritative)
-            "texte_reponse": insert_stmt.excluded.texte_reponse,
-            "date_reponse_jo": insert_stmt.excluded.date_reponse_jo,
-            "page_reponse_jo": insert_stmt.excluded.page_reponse_jo,
-            "ministre_reponse_id": insert_stmt.excluded.ministre_reponse_id,
-            "ministre_reponse_libelle": insert_stmt.excluded.ministre_reponse_libelle,
+            # Response FK: always overwrite (WS is authoritative)
+            "reponse_id": insert_stmt.excluded.reponse_id,
             # Attributee ministry may change via re-attribution
             "ministre_attributaire_id": insert_stmt.excluded.ministre_attributaire_id,
             "ministre_attributaire_libelle": insert_stmt.excluded.ministre_attributaire_libelle,
