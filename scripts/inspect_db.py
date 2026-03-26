@@ -22,6 +22,7 @@ from qe.models import (
     QuestionAttribution,
     QuestionCluster,
     QuestionStateChange,
+    Reponse,
 )
 
 _SEP = "─" * 72
@@ -37,6 +38,7 @@ def _counts(session) -> None:
     _section("Row counts")
     tables = [
         ("ministeres", Ministere),
+        ("reponses", Reponse),
         ("questions", Question),
         ("question_state_changes", QuestionStateChange),
         ("question_attributions", QuestionAttribution),
@@ -77,7 +79,7 @@ def _questions(session, n: int) -> None:
         print("  (empty)")
         return
     for q in rows:
-        reponse_flag = "REP" if q.texte_reponse else "   "
+        reponse_flag = "REP" if q.reponse_id else "   "
         date_str = str(q.date_publication_jo) if q.date_publication_jo else "????-??-??"
         auteur = (q.auteur_nom or "")[:25]
         ministere = (q.ministre_attributaire_libelle or "")[:30]
