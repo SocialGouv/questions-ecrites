@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from qe.db import get_session
-from qe.models import Ministere, Question
+from qe.models import Ministere, Question, Reponse
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,9 @@ class ParsedQuestion:
     objet: str | None  # <Objet> short title
     texte_question: str
     # Response fields — None when etat_question == "EN_COURS"
+    reponse_id: str | None = None
     texte_reponse: str | None = None
+    no_publication: str | None = None
     date_reponse_jo: date | None = None
     page_reponse_jo: int | None = None
 
@@ -178,21 +180,33 @@ def _parse_qe_section(section: Element) -> list[ParsedQuestion]:
 
 def _parse_reponse_element(
     rep_elem: Element | None,
-) -> tuple[str | None, date | None, int | None]:
+    source: str,
+) -> tuple[str | None, str | None, str | None, date | None, int | None]:
+    """Parse a <reponse> element.
+
+    Returns (reponse_id, no_publication, texte_rep, date_rep, page_rep).
+    reponse_id is None when the required JO reference fields are missing.
+    """
     if rep_elem is None:
-        return None, None, None
+        return None, None, None, None, None
 
     texte_rep: str | None = (rep_elem.findtext("texteReponse") or "").strip() or None
 
     date_rep: date | None = None
     page_rep: int | None = None
+    no_pub: str | None = None
     rep_ref = rep_elem.find("referencePublication")
     if rep_ref is not None:
         date_rep = _parse_date(rep_ref.findtext("datePublication"))
         page_str = (rep_ref.findtext("pageJO") or "").strip()
         page_rep = int(page_str) if page_str.isdigit() else None
+        no_pub = (rep_ref.findtext("noPublication") or "").strip() or None
 
-    return texte_rep, date_rep, page_rep
+    reponse_id: str | None = None
+    if no_pub and page_rep is not None:
+        reponse_id = f"{source}-{no_pub}-{page_rep}"
+
+    return reponse_id, no_pub, texte_rep, date_rep, page_rep
 
 
 def _parse_rep_section(section: Element) -> list[ParsedQuestion]:
@@ -203,7 +217,16 @@ def _parse_rep_section(section: Element) -> list[ParsedQuestion]:
         q_elems = [c for c in entry if c.tag == "question"]
         rep_elem = entry.find("reponse")
 
-        texte_rep, date_rep, page_rep = _parse_reponse_element(rep_elem)
+        # Derive source from the first question element in this entry
+        source = ""
+        if q_elems:
+            id_q = q_elems[0].find("idQuestion")
+            if id_q is not None:
+                source = (id_q.findtext("source") or "").strip()
+
+        reponse_id, no_pub, texte_rep, date_rep, page_rep = _parse_reponse_element(
+            rep_elem, source
+        )
 
         for q_elem in q_elems:
             pq = _parse_question_element(q_elem)
@@ -211,7 +234,9 @@ def _parse_rep_section(section: Element) -> list[ParsedQuestion]:
                 continue
 
             pq.etat_question = "REPONDU"
+            pq.reponse_id = reponse_id
             pq.texte_reponse = texte_rep
+            pq.no_publication = no_pub
             pq.date_reponse_jo = date_rep
             pq.page_reponse_jo = page_rep
 
@@ -302,8 +327,7 @@ def ingest_questions(
     Conflict strategy on primary key `id`:
       - New questions         -> full INSERT
       - Already known         -> UPDATE response fields only
-        (etat_question, texte_reponse, date_reponse_jo, page_reponse_jo,
-        ministre_reponse_*, updated_at).
+        (etat_question, reponse_id, updated_at).
         Immutable fields (texte_question, author, deposit date…) are preserved.
 
     Additional upsert guards:
@@ -320,6 +344,41 @@ def ingest_questions(
     with get_session() as session:
         ministere_cache = _load_ministere_cache(session)
 
+        # --- upsert responses first (FK target must exist before questions) ---
+        seen_reponse_ids: set[str] = set()
+        for pq in questions:
+            if pq.reponse_id is None or pq.reponse_id in seen_reponse_ids:
+                continue
+            seen_reponse_ids.add(pq.reponse_id)
+
+            min_id_rep: int | None = None
+            if pq.ministre_libelle:
+                min_id_rep = _get_or_create_ministere(
+                    session, pq.ministre_libelle, ministere_cache, stats
+                )
+
+            rep_values = {
+                "id": pq.reponse_id,
+                "source": pq.source,
+                "no_publication": pq.no_publication,
+                "texte_reponse": pq.texte_reponse or "",
+                # open data does not distinguish response ministry from depot ministry
+                "ministre_reponse_id": min_id_rep,
+                "ministre_reponse_libelle": pq.ministre_libelle,
+                "date_reponse_jo": pq.date_reponse_jo,
+                "page_reponse_jo": pq.page_reponse_jo,
+            }
+            rep_stmt = (
+                pg_insert(Reponse)
+                .values(**rep_values)
+                .on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={"updated_at": func.now()},
+                )
+            )
+            session.execute(rep_stmt)
+
+        # --- upsert questions ---
         for pq in questions:
             min_id: int | None = None
             if pq.ministre_libelle:
@@ -343,15 +402,7 @@ def ingest_questions(
                 "auteur_nom": pq.auteur_nom,
                 "objet": pq.objet,
                 "texte_question": pq.texte_question,
-                "texte_reponse": pq.texte_reponse,
-                "date_reponse_jo": pq.date_reponse_jo,
-                "page_reponse_jo": pq.page_reponse_jo,
-                # ministre_reponse_* = same ministry as depot (open data does not
-                # distinguish; the WS can enrich this later if needed)
-                "ministre_reponse_id": min_id if pq.texte_reponse else None,
-                "ministre_reponse_libelle": (
-                    pq.ministre_libelle if pq.texte_reponse else None
-                ),
+                "reponse_id": pq.reponse_id,
                 "ingest_source": ingest_source,
             }
 
@@ -388,12 +439,8 @@ def ingest_questions(
                         insert_stmt.excluded.objet,
                         literal_column("questions.objet"),
                     ),
-                    # Response fields: always update
-                    "texte_reponse": insert_stmt.excluded.texte_reponse,
-                    "date_reponse_jo": insert_stmt.excluded.date_reponse_jo,
-                    "page_reponse_jo": insert_stmt.excluded.page_reponse_jo,
-                    "ministre_reponse_id": insert_stmt.excluded.ministre_reponse_id,
-                    "ministre_reponse_libelle": insert_stmt.excluded.ministre_reponse_libelle,
+                    # Response field: always update
+                    "reponse_id": insert_stmt.excluded.reponse_id,
                     "updated_at": func.now(),
                 },
             )

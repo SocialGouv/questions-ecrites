@@ -76,10 +76,41 @@ class Ministere(Base):
         foreign_keys="Question.ministre_attributaire_id",
         back_populates="ministre_attributaire",
     )
-    questions_repondues: Mapped[list[Question]] = relationship(
-        "Question",
-        foreign_keys="Question.ministre_reponse_id",
+    reponses: Mapped[list[Reponse]] = relationship(
+        "Reponse",
+        foreign_keys="Reponse.ministre_reponse_id",
         back_populates="ministre_reponse",
+    )
+
+
+class Reponse(Base):
+    __tablename__ = "reponses"
+
+    # "{source}-{no_publication}-{page_reponse_jo}" — e.g. "AN-20260009-1882"
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    source: Mapped[str] = mapped_column(Text, nullable=False)  # AN | SENAT
+    no_publication: Mapped[str] = mapped_column(Text, nullable=False)  # JO issue number
+    texte_reponse: Mapped[str] = mapped_column(Text, nullable=False)
+    ministre_reponse_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("ministeres.id"), nullable=True
+    )
+    ministre_reponse_libelle: Mapped[str | None] = mapped_column(Text, nullable=True)
+    date_reponse_jo: Mapped[date | None] = mapped_column(Date, nullable=True)
+    page_reponse_jo: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    ministre_reponse: Mapped[Ministere | None] = relationship(
+        "Ministere",
+        foreign_keys=[ministre_reponse_id],
+        back_populates="reponses",
+    )
+    questions: Mapped[list[Question]] = relationship(
+        "Question", back_populates="reponse"
     )
 
 
@@ -142,15 +173,11 @@ class Question(Base):
 
     # --- textes ---
     texte_question: Mapped[str] = mapped_column(Text, nullable=False)
-    texte_reponse: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # --- réponse (None tant que EN_COURS) ---
-    ministre_reponse_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("ministeres.id"), nullable=True
+    reponse_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("reponses.id"), nullable=True
     )
-    ministre_reponse_libelle: Mapped[str | None] = mapped_column(Text, nullable=True)
-    date_reponse_jo: Mapped[date | None] = mapped_column(Date, nullable=True)
-    page_reponse_jo: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # --- liens ---
     # question dont celle-ci est le renouvellement
@@ -181,10 +208,8 @@ class Question(Base):
         foreign_keys=[ministre_attributaire_id],
         back_populates="questions_attribuees",
     )
-    ministre_reponse: Mapped[Ministere | None] = relationship(
-        "Ministere",
-        foreign_keys=[ministre_reponse_id],
-        back_populates="questions_repondues",
+    reponse: Mapped[Reponse | None] = relationship(
+        "Reponse", back_populates="questions"
     )
     rappel: Mapped[Question | None] = relationship(
         "Question", remote_side="Question.id", foreign_keys=[rappel_id]
