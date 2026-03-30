@@ -25,10 +25,11 @@ from __future__ import annotations
 import logging
 import re
 import tarfile
+import zipfile
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from xml.etree.ElementTree import Element
 
 from defusedxml.ElementTree import ParseError, fromstring
@@ -696,4 +697,238 @@ def ingest_taz_file(taz_path: Path, *, ingest_source: str = "opendata") -> Inges
 
     stats = ingest_questions(questions, ingest_source=ingest_source)
     stats.taz_file = taz_path.name
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# AN legacy ZIP archives (XIV and XV legislatures)
+#
+# Two distinct ZIP layouts exist:
+#
+#   XIV  — single file  Questions_ecrites_XIV.xml  with root <questionsEcrites>
+#           containing many <question> children.  No XML namespace.
+#           Dates in ISO 8601 format (YYYY-MM-DD).
+#
+#   XV   — one file per question under  xml/QANR5L15QE*.xml.
+#           Namespace: http://schemas.assemblee-nationale.fr/referentiel
+#           Dates in DD/MM/YYYY format.
+# ---------------------------------------------------------------------------
+
+_AN_NS = "http://schemas.assemblee-nationale.fr/referentiel"
+_AN_DATE_DMY = re.compile(r"(\d{2})/(\d{2})/(\d{4})")  # DD/MM/YYYY (XV)
+
+
+def _parse_an_date(s: str | None) -> date | None:
+    """Parse a date string from AN legacy XML — either ISO or DD/MM/YYYY."""
+    if not s:
+        return None
+    s = s.strip()
+    # ISO 8601 (XIV format)
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        pass
+    # DD/MM/YYYY (XV format)
+    m = _AN_DATE_DMY.fullmatch(s)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            pass
+    return None
+
+
+def _parse_an_question_element(  # noqa: C901
+    elem: Element, tag: "Callable[[str], str]"
+) -> ParsedQuestion | None:
+    """Extract a ParsedQuestion from a single <question> Element.
+
+    ``tag`` maps a plain field name to the qualified tag string, i.e.
+    ``"{namespace}name"`` for XV (namespaced) or just ``"name"`` for XIV.
+    """
+
+    def _t(node: Element | None, *names: str) -> str | None:
+        for name in names:
+            if node is None:
+                return None
+            node = node.find(tag(name))
+        return (node.text or "").strip() or None if node is not None else None
+
+    identifiant = elem.find(tag("identifiant"))
+    if identifiant is None:
+        return None
+
+    numero_str = _t(identifiant, "numero")
+    legislature_str = _t(identifiant, "legislature")
+    if not numero_str or not legislature_str:
+        return None
+
+    numero = int(numero_str)
+    legislature = int(legislature_str)
+    qid = f"AN-{legislature}-QE-{numero}"
+
+    # Ministry: prefer last attributee entry, fall back to minInt
+    ministre_libelle: str | None = None
+    min_attribs = elem.find(tag("minAttribs"))
+    if min_attribs is not None:
+        attrib_list = min_attribs.findall(tag("minAttrib"))
+        if attrib_list:
+            ministre_libelle = _t(
+                attrib_list[-1].find(tag("denomination")), "developpe"
+            )
+    if ministre_libelle is None:
+        ministre_libelle = _t(elem.find(tag("minInt")), "developpe")
+
+    # Publication date and question text (first texteQuestion entry)
+    date_pub: date | None = None
+    texte_question = ""
+    textes_q = elem.find(tag("textesQuestion"))
+    if textes_q is not None:
+        first_tq = textes_q.find(tag("texteQuestion"))
+        if first_tq is not None:
+            date_pub = _parse_an_date(_t(first_tq.find(tag("infoJO")), "dateJO"))
+            texte_question = _t(first_tq, "texte") or ""
+
+    # Objet — teteAnalyse if set, else first ANA element
+    objet: str | None = None
+    idx = elem.find(tag("indexationAN"))
+    if idx is not None:
+        objet = _t(idx, "teteAnalyse")
+        if not objet:
+            analyse = idx.find(tag("ANALYSE"))
+            if analyse is not None:
+                objet = _t(analyse, "ANA")
+
+    # Response
+    etat = "EN_COURS"
+    texte_reponse: str | None = None
+    date_reponse: date | None = None
+    textes_r = elem.find(tag("textesReponse"))
+    if textes_r is not None:
+        first_tr = textes_r.find(tag("texteReponse"))
+        if first_tr is not None:
+            etat = "REPONDU"
+            texte_reponse = _t(first_tr, "texte")
+            date_reponse = _parse_an_date(_t(first_tr.find(tag("infoJO")), "dateJO"))
+
+    # Synthetic reponse_id — the AN legacy format has no JO page number, so we
+    # use the question id as the unique key to link to the reponses table.
+    reponse_id: str | None = None
+    no_publication: str | None = None
+    if texte_reponse:
+        reponse_id = f"AN-LEGACY-{qid}"
+        no_publication = "LEGACY"
+
+    return ParsedQuestion(
+        id=qid,
+        numero_question=numero,
+        type="QE",
+        source="AN",
+        legislature=legislature,
+        etat_question=etat,
+        date_publication_jo=date_pub,
+        page_jo=None,
+        ministre_libelle=ministre_libelle,
+        auteur_nom=None,  # only acteurRef available; full name requires separate lookup
+        objet=objet,
+        texte_question=texte_question,
+        reponse_id=reponse_id,
+        no_publication=no_publication,
+        texte_reponse=texte_reponse,
+        date_reponse_jo=date_reponse,
+    )
+
+
+def parse_an_archive_question_xml(xml_bytes: bytes) -> ParsedQuestion | None:
+    """Parse a single namespaced question XML file (XV per-file format)."""
+    try:
+        root = fromstring(xml_bytes)
+    except ParseError as exc:
+        logger.debug("XML parse error (AN legacy XV): %s", exc)
+        return None
+    return _parse_an_question_element(root, lambda name: f"{{{_AN_NS}}}{name}")
+
+
+def parse_an_bulk_xml(xml_bytes: bytes) -> list[ParsedQuestion]:
+    """Parse the XIV bulk XML file (root <questionsEcrites>, no namespace)."""
+    try:
+        root = fromstring(xml_bytes)
+    except ParseError as exc:
+        logger.debug("XML parse error (AN legacy XIV): %s", exc)
+        return []
+
+    questions: list[ParsedQuestion] = []
+    for elem in root.iter("question"):
+        pq = _parse_an_question_element(elem, lambda name: name)
+        if pq is not None:
+            questions.append(pq)
+    return questions
+
+
+def ingest_an_zip_file(
+    zip_path: Path, *, ingest_source: str = "an_legacy"
+) -> IngestStats:
+    """Parse and ingest an AN legacy ZIP archive (XIV or XV legislature).
+
+    Detects the archive format automatically:
+    - XIV: single ``Questions_ecrites_XIV.xml`` bulk file, no namespace, ISO dates.
+    - XV:  one file per question under ``xml/``, namespaced, DD/MM/YYYY dates.
+    Questions are upserted in batches of 500 to limit memory usage.
+    """
+    logger.info("Processing %s", zip_path.name)
+
+    BATCH = 500
+    stats = IngestStats(taz_file=zip_path.name)
+
+    try:
+        zf = zipfile.ZipFile(zip_path)
+    except zipfile.BadZipFile as exc:
+        logger.error("Failed to open %s: %s", zip_path.name, exc)
+        return stats
+
+    def _flush(batch: list[ParsedQuestion]) -> None:
+        s = ingest_questions(batch, ingest_source=ingest_source)
+        stats.questions_parsed += s.questions_parsed
+        stats.questions_inserted += s.questions_inserted
+        stats.ministeres_created += s.ministeres_created
+
+    with zf:
+        names = zf.namelist()
+        per_file_entries = [
+            n for n in names if n.startswith("xml/") and n.endswith(".xml")
+        ]
+        bulk_entries = [n for n in names if n.endswith(".xml") and "/" not in n]
+
+        if per_file_entries:
+            # XV format: one XML per question
+            logger.info("  XV format — %d XML entries", len(per_file_entries))
+            batch: list[ParsedQuestion] = []
+            for name in per_file_entries:
+                pq = parse_an_archive_question_xml(zf.read(name))
+                if pq is None:
+                    continue
+                batch.append(pq)
+                if len(batch) >= BATCH:
+                    _flush(batch)
+                    batch = []
+            if batch:
+                _flush(batch)
+
+        elif bulk_entries:
+            # XIV format: single bulk XML file
+            logger.info("  XIV format — bulk XML: %s", bulk_entries[0])
+            questions = parse_an_bulk_xml(zf.read(bulk_entries[0]))
+            logger.info("  %d questions parsed", len(questions))
+            for i in range(0, len(questions), BATCH):
+                _flush(questions[i : i + BATCH])
+
+        else:
+            logger.warning("No parseable XML found in %s", zip_path.name)
+
+    logger.info(
+        "  %s — %d questions upserted, %d new ministries",
+        zip_path.name,
+        stats.questions_inserted,
+        stats.ministeres_created,
+    )
     return stats

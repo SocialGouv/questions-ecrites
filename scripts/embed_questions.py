@@ -235,6 +235,12 @@ def _load_questions(
         return list(session.execute(stmt).scalars().all())
 
 
+def _load_all_question_ids() -> set[str]:
+    """Return all question IDs in PostgreSQL, unfiltered, for stale detection."""
+    with db.get_session() as session:
+        return set(session.execute(select(Question.id)).scalars().all())
+
+
 def _load_existing_points(
     qdrant: QdrantClient, collection: str
 ) -> dict[str, tuple[str, str]]:
@@ -319,8 +325,10 @@ def embed_questions(  # noqa: C901
     existing = _load_existing_points(qdrant, collection)
 
     # --- Stale point cleanup ---
-    db_ids = {q.id for q in questions}
-    stale_ids = [qid for qid in existing if qid not in db_ids]
+    # Use all DB IDs (unfiltered) so questions outside the current filter scope
+    # are never incorrectly treated as stale and deleted.
+    all_db_ids = _load_all_question_ids()
+    stale_ids = [qid for qid in existing if qid not in all_db_ids]
     if stale_ids:
         logger.info("Removing %d stale point(s) (deleted from DB)...", len(stale_ids))
         for qid in stale_ids:
