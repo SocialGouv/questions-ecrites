@@ -15,17 +15,22 @@ Available archives (static, one per completed legislature):
                          repository/15/questions/questions_ecrites/
                          Questions_ecrites_XV.xml.zip           (~97 MB)
 
-XVI (2022–2024) and XVII (2024–present) are not yet available as static
-archives.  The XVI AN questions remain inaccessible as bulk data; XVII
-questions published from JO 26 of 2025 onwards are covered by the DILA
-REDIF archives downloaded with download_opendata.py.
+    XVI (2022–2024)  https://data.assemblee-nationale.fr/static/openData/
+                         repository/16/questions/questions_ecrites/
+                         Questions_ecrites.xml.zip              (~47 MB)
+                         Note: no roman numeral in the server-side filename.
+                         Last updated June 28, 2024 (covers the legislature
+                         up to ~2 weeks before dissolution).
+
+XVII (2024–present) questions are covered by the DILA REDIF archives
+downloaded with download_opendata.py.
 
 Usage:
-    # Download both XIV and XV archives (default)
+    # Download XIV, XV, and XVI archives (default)
     poetry run python scripts/download_an_legacy.py --dir data/an_archives/
 
     # Download only a specific legislature
-    poetry run python scripts/download_an_legacy.py --dir data/an_archives/ --legislature 15
+    poetry run python scripts/download_an_legacy.py --dir data/an_archives/ --legislature 16
 
     # List what would be downloaded without fetching
     poetry run python scripts/download_an_legacy.py --dir data/an_archives/ --dry-run
@@ -49,16 +54,13 @@ logger = logging.getLogger(__name__)
 
 _BASE = "https://data.assemblee-nationale.fr/static/openData/repository"
 
-# Completed legislatures with available static archives.
-# XVI and XVII are omitted — no bulk archive exists yet.
-_ROMAN = {14: "XIV", 15: "XV"}
+_ROMAN = {14: "XIV", 15: "XV", 16: "XVI"}
 
+# XVI uses a different server-side filename (no roman numeral suffix).
 _ARCHIVES: dict[int, str] = {
-    leg: (
-        f"{_BASE}/{leg}/questions/questions_ecrites/"
-        f"Questions_ecrites_{_ROMAN[leg]}.xml.zip"
-    )
-    for leg in _ROMAN
+    14: f"{_BASE}/14/questions/questions_ecrites/Questions_ecrites_XIV.xml.zip",
+    15: f"{_BASE}/15/questions/questions_ecrites/Questions_ecrites_XV.xml.zip",
+    16: f"{_BASE}/16/questions/questions_ecrites/Questions_ecrites.xml.zip",
 }
 
 
@@ -136,11 +138,11 @@ def run(dest_dir: Path, legislatures: list[int], dry_run: bool) -> None:
 def main() -> None:
     available = sorted(_ARCHIVES)
     parser = argparse.ArgumentParser(
-        description="Download AN legacy question archives (XIV and XV only).",
+        description="Download AN legacy question archives (XIV, XV, and XVI).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Note: XVI and XVII legislature archives are not yet available\n"
-            "as bulk downloads from the AN open data portal."
+            "Note: XVII (2024–present) questions are covered by the DILA\n"
+            "REDIF archives — use download_opendata.py for those."
         ),
     )
     parser.add_argument(
