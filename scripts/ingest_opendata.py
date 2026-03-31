@@ -23,11 +23,13 @@ Typical workflow for the historical ingest:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import sys
 import tarfile
 from pathlib import Path
 
+from qe import db
 from qe.ingestion_opendata import ingest_taz_file, parse_redif_xml
 
 logging.basicConfig(
@@ -128,7 +130,13 @@ def main() -> None:
     total_ministeres = 0
     errors: list[str] = []
 
+    manifest = db.get_manifest_entries()
+
     for taz_path in taz_files:
+        file_hash = hashlib.sha256(taz_path.read_bytes()).hexdigest()
+        if manifest.get(str(taz_path)) == file_hash:
+            logger.info("  %-32s -> already ingested, skipping", taz_path.name)
+            continue
         try:
             stats = ingest_taz_file(taz_path)
             logger.info(
@@ -139,6 +147,7 @@ def main() -> None:
             )
             total_questions += stats.questions_inserted
             total_ministeres += stats.ministeres_created
+            db.upsert_manifest(str(taz_path), file_hash)
         except Exception as exc:
             logger.error("Error processing %s: %s", taz_path.name, exc)
             errors.append(taz_path.name)

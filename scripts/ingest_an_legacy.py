@@ -12,11 +12,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import sys
 import zipfile
 from pathlib import Path
 
+from qe import db
 from qe.ingestion_opendata import (
     ingest_an_zip_file,
     parse_an_archive_question_xml,
@@ -109,11 +111,18 @@ def main() -> None:
     total_ministeres = 0
     errors: list[str] = []
 
+    manifest = db.get_manifest_entries()
+
     for zip_path in zip_files:
+        file_hash = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+        if manifest.get(str(zip_path)) == file_hash:
+            logger.info("  %-40s -> already ingested, skipping", zip_path.name)
+            continue
         try:
             stats = ingest_an_zip_file(zip_path)
             total_questions += stats.questions_inserted
             total_ministeres += stats.ministeres_created
+            db.upsert_manifest(str(zip_path), file_hash)
         except Exception as exc:
             logger.error("Error processing %s: %s", zip_path.name, exc)
             errors.append(zip_path.name)
