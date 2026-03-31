@@ -2,9 +2,10 @@
 """Cluster parliamentary questions by semantic similarity.
 
 Fetches question embeddings from Qdrant (populated by embed_questions.py) and
-groups them using agglomerative clustering with average linkage and cosine distance.
-Questions whose cosine similarity exceeds --threshold are placed in the same cluster.
-Singleton clusters and noise points are excluded from the output.
+groups them using a memory-efficient graph-based approach: pairwise cosine
+similarities are computed in batches via matrix multiplication; pairs that exceed
+--threshold are linked in a Union-Find structure; connected components become
+clusters.  Singleton clusters and noise points are excluded from the output.
 
 Usage:
     # Default threshold (0.90)
@@ -20,7 +21,6 @@ Usage:
 
 Requires:
     - A populated Qdrant collection (run embed_questions.py first)
-    - scikit-learn >= 1.3
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from sklearn.cluster import AgglomerativeClustering
+from tqdm import tqdm
 
 from qe.clients.qdrant import QdrantClient
 from qe.db import save_clusters
@@ -133,35 +133,97 @@ def _fetch_points(
     return points
 
 
-def _run_allotissement(
+class _UnionFind:
+    """Union-Find with path compression, union by rank, and centroid tracking.
+
+    Each root stores the weighted-average centroid of its cluster.  A merge is
+    only performed when the cosine similarity between the two cluster centroids
+    is >= threshold, which prevents the chaining artefact of plain single-linkage.
+    """
+
+    def __init__(self, n: int, centroids: np.ndarray) -> None:
+        self.parent = list(range(n))
+        self.rank = [0] * n
+        self.sizes = [1] * n
+        # Centroid for each root; non-root slots are unused after a merge.
+        self.centroids = centroids.copy()
+
+    def find(self, x: int) -> int:
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]  # path halving
+            x = self.parent[x]
+        return x
+
+    def union(self, x: int, y: int, threshold: float) -> None:
+        rx, ry = self.find(x), self.find(y)
+        if rx == ry:
+            return
+        # Guard: only merge if the two cluster centroids are still close enough.
+        cx, cy = self.centroids[rx], self.centroids[ry]
+        nx, ny = np.linalg.norm(cx), np.linalg.norm(cy)
+        if nx == 0.0 or ny == 0.0 or float(np.dot(cx, cy)) / (nx * ny) < threshold:
+            return
+        # Merge by rank.
+        if self.rank[rx] < self.rank[ry]:
+            rx, ry = ry, rx
+        self.parent[ry] = rx
+        if self.rank[rx] == self.rank[ry]:
+            self.rank[rx] += 1
+        # Update the surviving root's centroid as a weighted mean.
+        n_rx, n_ry = self.sizes[rx], self.sizes[ry]
+        self.centroids[rx] = (n_rx * self.centroids[rx] + n_ry * self.centroids[ry]) / (
+            n_rx + n_ry
+        )
+        self.sizes[rx] = n_rx + n_ry
+
+
+def _run_graph_clustering(
     matrix: np.ndarray,
     threshold: float,
     min_cluster_size: int,
+    batch_size: int = 512,
 ) -> np.ndarray:
-    """Agglomerative clustering with cosine distance, tunable threshold.
+    """Memory-efficient clustering via batched cosine similarity + Union-Find.
+
+    Processes vectors in row-batches so the similarity matrix is never fully
+    materialised.  Peak extra memory ≈ batch_size × N × 4 bytes (float32).
 
     Returns an array of integer cluster labels (same length as matrix).
     Singletons are relabelled to −1 (noise) when min_cluster_size > 1.
     """
+    n = len(matrix)
 
-    # distance_threshold = 1 − similarity_threshold (cosine distance)
-    distance_threshold = 1.0 - threshold
+    # Normalise to unit vectors so dot-product == cosine similarity.
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms[norms == 0.0] = 1.0
+    normed = (matrix / norms).astype(np.float32)
 
-    model = AgglomerativeClustering(
-        metric="cosine",
-        linkage="average",
-        distance_threshold=distance_threshold,
-        n_clusters=None,
-    )
-    labels: np.ndarray = model.fit_predict(matrix)
+    uf = _UnionFind(n, normed)
+    n_batches = (n + batch_size - 1) // batch_size
+
+    with tqdm(total=n, unit="vec", desc="Clustering") as bar:
+        for start in range(0, n, batch_size):
+            end = min(start + batch_size, n)
+            # shape: (batch, n) — cosine similarities between this batch and all points
+            block: np.ndarray = normed[start:end] @ normed.T
+            rows, cols = np.nonzero(block >= threshold)
+            for r, c in zip(rows, cols, strict=False):
+                i = start + int(r)
+                j = int(c)
+                if i < j:
+                    uf.union(i, j, threshold)
+            bar.update(end - start)
+            bar.set_postfix(batch=f"{start // batch_size + 1}/{n_batches}")
+
+    logger.info("Building cluster labels from Union-Find roots.")
+    labels = np.array([uf.find(i) for i in range(n)])
 
     if min_cluster_size > 1:
-        # Count cluster sizes and relabel small clusters as noise (−1).
         unique, counts = np.unique(labels, return_counts=True)
         small = {
-            label
-            for label, count in zip(unique, counts, strict=False)
-            if count < min_cluster_size
+            lbl
+            for lbl, cnt in zip(unique, counts, strict=False)
+            if cnt < min_cluster_size
         }
         labels = np.where(np.isin(labels, list(small)), -1, labels)
 
@@ -258,7 +320,7 @@ def cluster_questions(config: ClusterConfig) -> list[dict]:
     vectors = np.array([p["vector"] for p in valid_points], dtype=np.float32)
     logger.info("Matrix shape: %s", vectors.shape)
 
-    labels = _run_allotissement(vectors, config.threshold, config.min_cluster_size)
+    labels = _run_graph_clustering(vectors, config.threshold, config.min_cluster_size)
 
     noise_count = int((labels == -1).sum())
     cluster_count = len(set(labels) - {-1})
@@ -278,7 +340,9 @@ def main() -> None:
 
     output_json = json.dumps(clusters, ensure_ascii=False, indent=2)
     config.output.parent.mkdir(parents=True, exist_ok=True)
-    config.output.write_text(output_json, encoding="utf-8")
+    tmp = config.output.with_suffix(".json.tmp")
+    tmp.write_text(output_json, encoding="utf-8")
+    tmp.rename(config.output)
     logger.info("Wrote %d cluster(s) to %s.", len(clusters), config.output)
 
     total_questions = sum(c["size"] for c in clusters)
