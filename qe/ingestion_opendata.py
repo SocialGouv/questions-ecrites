@@ -503,7 +503,7 @@ def ingest_questions(
       - New questions         -> full INSERT
       - Already known         -> UPDATE response fields only
         (etat_question, reponse_id, updated_at).
-        Immutable fields (texte_question, author, deposit date…) are preserved.
+        Most fields (author, deposit date…) are preserved on conflict.
 
     Additional upsert guards:
       - etat_question is never downgraded: REPONDU stays REPONDU even if the
@@ -511,6 +511,11 @@ def ingest_questions(
       - date_publication_jo / page_jo use COALESCE(existing, incoming) so a
         correct value from a QE section is never overwritten by the NULL that
         REP section entries carry.
+      - texte_question uses COALESCE(NULLIF(existing, ''), incoming) so a
+        question first inserted from a REP section (with empty text) gets its
+        text filled in when the QE section archive is later processed.
+      - reponse_id uses COALESCE(incoming, existing) so a valid reponse_id
+        already in the DB is never cleared by a NULL from a QE-section entry.
     """
     stats = IngestStats(questions_parsed=len(questions))
     if not questions:
@@ -586,7 +591,13 @@ def ingest_questions(
             # References to the existing row columns (the "target" side)
             _existing: dict[str, ColumnElement[Any]] = {
                 col: literal_column(f"questions.{col}")
-                for col in ("etat_question", "date_publication_jo", "page_jo")
+                for col in (
+                    "etat_question",
+                    "date_publication_jo",
+                    "page_jo",
+                    "texte_question",
+                    "reponse_id",
+                )
             }
 
             upsert_stmt = insert_stmt.on_conflict_do_update(
@@ -609,13 +620,25 @@ def ingest_questions(
                         _existing["page_jo"],
                         insert_stmt.excluded.page_jo,
                     ),
+                    # Fill in texte_question if the existing value is empty
+                    # (questions first inserted from a REP section have "" here).
+                    "texte_question": func.coalesce(
+                        func.nullif(_existing["texte_question"], ""),
+                        insert_stmt.excluded.texte_question,
+                    ),
                     # Static fields: update if incoming is not NULL
                     "objet": func.coalesce(
                         insert_stmt.excluded.objet,
                         literal_column("questions.objet"),
                     ),
-                    # Response field: always update
-                    "reponse_id": insert_stmt.excluded.reponse_id,
+                    # Response field: take incoming if set, preserve existing otherwise.
+                    # Never clear a valid reponse_id with NULL (e.g. when a
+                    # QE-section entry is processed after a REP-section entry
+                    # or after WS-polling has already set the value).
+                    "reponse_id": func.coalesce(
+                        insert_stmt.excluded.reponse_id,
+                        _existing["reponse_id"],
+                    ),
                     "updated_at": func.now(),
                 },
             )

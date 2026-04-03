@@ -96,6 +96,18 @@ class QdrantClient:
         data = response.json()
         return data.get("result", [])
 
+    def get_points_by_ids(
+        self, name: str, ids: list[str], *, with_vectors: bool = True
+    ) -> list[dict]:
+        """Fetch multiple points by ID in one request."""
+        response = requests.post(
+            f"{self.base_url}/collections/{name}/points",
+            json={"ids": ids, "with_vectors": with_vectors, "with_payload": True},
+            timeout=60,
+        )
+        response.raise_for_status()
+        return response.json().get("result", [])
+
     def scroll_all(
         self,
         collection: str,

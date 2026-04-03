@@ -66,16 +66,16 @@ def _list_directory(url: str, http: requests.Session) -> list[str]:
     return [f.split("/")[-1] for f in filenames]
 
 
-def _directory_urls(years: int) -> list[tuple[str, str]]:
+def _directory_urls(years: int, sources: list[str]) -> list[tuple[str, str]]:
     """Return a list of (label, url) pairs to scrape.
 
-    Always includes Annee_en_cours for both AN and SENAT.
+    Always includes Annee_en_cours for each requested source.
     If years > 0, also includes that many prior calendar years.
     """
     current_year = date.today().year
     dirs: list[tuple[str, str]] = []
 
-    for source in ("AN", "SENAT"):
+    for source in sources:
         dirs.append(
             (
                 f"{source}/Annee_en_cours",
@@ -123,7 +123,7 @@ def _download_file(url: str, dest: Path, http: requests.Session) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def run(dest_dir: Path, years: int, dry_run: bool) -> None:
+def run(dest_dir: Path, years: int, source: str, dry_run: bool) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     http = requests.Session()
@@ -134,7 +134,8 @@ def run(dest_dir: Path, years: int, dry_run: bool) -> None:
     total_skipped = 0
     errors: list[str] = []
 
-    for label, url in _directory_urls(years):
+    sources = {"AN": ["AN"], "SENAT": ["SENAT"], "both": ["AN", "SENAT"]}[source]
+    for label, url in _directory_urls(years, sources):
         filenames = _list_directory(url, http)
         if not filenames:
             logger.warning("No .taz files found at %s", url)
@@ -198,6 +199,12 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--source",
+        choices=["AN", "SENAT", "both"],
+        default="both",
+        help="Which chamber to download (default: both)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="List files that would be downloaded without fetching them",
@@ -213,7 +220,7 @@ def main() -> None:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    run(dest_dir=args.dir, years=args.years, dry_run=args.dry_run)
+    run(dest_dir=args.dir, years=args.years, source=args.source, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
