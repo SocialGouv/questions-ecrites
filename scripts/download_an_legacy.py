@@ -1,36 +1,40 @@
 #!/usr/bin/env python3
-"""Download Assemblée Nationale legacy question archives (XML ZIP per legislature).
+"""Download Assemblée Nationale question archives (XML ZIP per legislature).
 
-The AN publishes consolidated ZIP archives of written questions per completed
-legislature on their open data portal.  Each ZIP contains one XML file per
-question.
+The AN publishes consolidated ZIP archives of written questions per legislature
+on their open data portal.  Each ZIP contains one XML file per question.
 
-Available archives (static, one per completed legislature):
+Available archives:
 
     XIV (2012–2017)  https://data.assemblee-nationale.fr/static/openData/
                          repository/14/questions/questions_ecrites/
                          Questions_ecrites_XIV.xml.zip          (~133 MB)
+                         Static archive (closed legislature).
 
     XV  (2017–2022)  https://data.assemblee-nationale.fr/static/openData/
                          repository/15/questions/questions_ecrites/
                          Questions_ecrites_XV.xml.zip           (~97 MB)
+                         Static archive (closed legislature).
 
     XVI (2022–2024)  https://data.assemblee-nationale.fr/static/openData/
                          repository/16/questions/questions_ecrites/
                          Questions_ecrites.xml.zip              (~47 MB)
                          Note: no roman numeral in the server-side filename.
-                         Last updated June 28, 2024 (covers the legislature
-                         up to ~2 weeks before dissolution).
+                         Static archive (closed legislature).
 
-XVII (2024–present) questions are covered by the DILA REDIF archives
-downloaded with download_opendata.py.
+    XVII (2024–…)    https://data.assemblee-nationale.fr/static/openData/
+                         repository/17/questions/questions_ecrites/
+                         Questions_ecrites.xml.zip
+                         LIVE archive — updated periodically as the legislature
+                         is ongoing.  Re-download regularly to pick up new
+                         questions and answers.
 
 Usage:
-    # Download XIV, XV, and XVI archives (default)
+    # Download XIV, XV, XVI, and XVII archives (default)
     poetry run python scripts/download_an_legacy.py --dir data/an_archives/
 
     # Download only a specific legislature
-    poetry run python scripts/download_an_legacy.py --dir data/an_archives/ --legislature 16
+    poetry run python scripts/download_an_legacy.py --dir data/an_archives/ --legislature 17
 
     # List what would be downloaded without fetching
     poetry run python scripts/download_an_legacy.py --dir data/an_archives/ --dry-run
@@ -54,14 +58,20 @@ logger = logging.getLogger(__name__)
 
 _BASE = "https://data.assemblee-nationale.fr/static/openData/repository"
 
-_ROMAN = {14: "XIV", 15: "XV", 16: "XVI"}
+_ROMAN = {14: "XIV", 15: "XV", 16: "XVI", 17: "XVII"}
 
-# XVI uses a different server-side filename (no roman numeral suffix).
+# XVI and XVII use a different server-side filename (no roman numeral suffix).
 _ARCHIVES: dict[int, str] = {
     14: f"{_BASE}/14/questions/questions_ecrites/Questions_ecrites_XIV.xml.zip",
     15: f"{_BASE}/15/questions/questions_ecrites/Questions_ecrites_XV.xml.zip",
     16: f"{_BASE}/16/questions/questions_ecrites/Questions_ecrites.xml.zip",
+    17: f"{_BASE}/17/questions/questions_ecrites/Questions_ecrites.xml.zip",
 }
+
+# XVII is a live archive (ongoing legislature) — always re-download to pick up
+# new questions and answers.  XIV, XV, and XVI are static closed-legislature
+# snapshots that never change.
+_LIVE_LEGISLATURES = frozenset({17})
 
 
 def _download(url: str, dest: Path, http: requests.Session) -> bool:
@@ -108,9 +118,14 @@ def run(dest_dir: Path, legislatures: list[int], dry_run: bool) -> None:
         filename = f"Questions_ecrites_{_ROMAN[leg]}.xml.zip"
         dest = dest_dir / filename
 
-        if dest.exists():
+        if dest.exists() and leg not in _LIVE_LEGISLATURES:
             logger.info("Legislature %d — already present: %s", leg, filename)
             continue
+
+        if dest.exists() and leg in _LIVE_LEGISLATURES:
+            logger.info(
+                "Legislature %d — re-downloading live archive: %s", leg, filename
+            )
 
         if dry_run:
             logger.info("Legislature %d — [dry-run] would download: %s", leg, filename)
@@ -138,11 +153,11 @@ def run(dest_dir: Path, legislatures: list[int], dry_run: bool) -> None:
 def main() -> None:
     available = sorted(_ARCHIVES)
     parser = argparse.ArgumentParser(
-        description="Download AN legacy question archives (XIV, XV, and XVI).",
+        description="Download AN question archives (XIV, XV, XVI, and XVII).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Note: XVII (2024–present) questions are covered by the DILA\n"
-            "REDIF archives — use download_opendata.py for those."
+            "Note: the XVII archive is updated periodically (live legislature).\n"
+            "Re-run without --legislature to refresh it alongside static archives."
         ),
     )
     parser.add_argument(

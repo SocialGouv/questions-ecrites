@@ -19,7 +19,7 @@ import zipfile
 from pathlib import Path
 
 from qe import db
-from qe.ingestion_opendata import (
+from qe.ingestion_an import (
     ingest_an_zip_file,
     parse_an_archive_question_xml,
     parse_an_bulk_xml,
