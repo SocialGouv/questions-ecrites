@@ -29,8 +29,14 @@ import sys
 import tarfile
 from pathlib import Path
 
+import re
+
 from qe import db
-from qe.ingestion_opendata import ingest_taz_file, parse_redif_xml
+from qe.ingestion_opendata import (
+    ingest_taz_file,
+    parse_redif_xml,
+    parse_senat_legacy_xml,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,6 +64,12 @@ def _parse_args() -> argparse.Namespace:
         help="Parse archives only, do not write to the database",
     )
     parser.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="Re-ingest archives even if already recorded in the manifest",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -70,18 +82,18 @@ def _dry_run_taz(taz_path: Path) -> int:
     """Parse a .taz archive without writing to the DB. Returns question count."""
     try:
         with tarfile.open(taz_path) as tar:
-            redif_file_member = next(
-                (
-                    file_member
-                    for file_member in tar.getmembers()
-                    if file_member.name.startswith("REDIF_")
-                ),
-                None,
+            members = tar.getmembers()
+            redif_member = next(
+                (m for m in members if m.name.startswith("REDIF_")), None
             )
-            if redif_file_member is None:
-                logger.warning("[dry-run] No REDIF_*.xml in %s", taz_path.name)
+            senat_legacy_member = next(
+                (m for m in members if re.match(r"SEQ\d+\.xml$", m.name)), None
+            )
+            member = redif_member or senat_legacy_member
+            if member is None:
+                logger.warning("[dry-run] No recognised XML in %s", taz_path.name)
                 return 0
-            file = tar.extractfile(redif_file_member)
+            file = tar.extractfile(member)
             if file is None:
                 return 0
             xml_bytes = file.read()
@@ -89,7 +101,8 @@ def _dry_run_taz(taz_path: Path) -> int:
         logger.error("[dry-run] Failed to read %s: %s", taz_path.name, exc)
         return 0
 
-    questions = parse_redif_xml(xml_bytes)
+    parser = parse_redif_xml if redif_member is not None else parse_senat_legacy_xml
+    questions = parser(xml_bytes)
     en_cours = sum(1 for q in questions if q.etat_question == "EN_COURS")
     repondues = sum(1 for q in questions if q.etat_question == "REPONDU")
     logger.info(
@@ -134,7 +147,7 @@ def main() -> None:
 
     for taz_path in taz_files:
         file_hash = hashlib.sha256(taz_path.read_bytes()).hexdigest()
-        if manifest.get(str(taz_path)) == file_hash:
+        if not args.force and manifest.get(str(taz_path)) == file_hash:
             logger.info("  %-32s -> already ingested, skipping", taz_path.name)
             continue
         try:
