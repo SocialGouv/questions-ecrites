@@ -44,6 +44,20 @@ pre-commit:
 # All checks (for CI)
 check: lint-fix format typecheck security test
 
+# Qdrant database
+qdrant-dump:
+	docker run --rm \
+		-v qdrant_data:/qdrant/storage:ro \
+		-v $(PWD):/backup \
+		busybox \
+		tar czf /backup/qdrant_storage_dump.tar.gz -C /qdrant/storage .
+	@echo "===== Qdrant database dumped to qdrant_storage_dump.tar.gz ====="
+
+# PostgreSQL database
+pg-dump:
+	docker exec qe-postgres pg_dump -U qe qe > qe_postgres_dump.sql
+	@echo "===== PostgreSQL database dumped to qe_postgres_dump.sql ====="
+
 # Clean
 clean:
 	rm -rf .coverage .coverage.* coverage.json lcov.info htmlcov
@@ -51,4 +65,4 @@ clean:
 	rm -rf dist build *.egg-info
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
-.PHONY: install test integration_test lint lint-fix format format-check typecheck security pre-commit check clean
+.PHONY: install test integration_test lint lint-fix format format-check typecheck security pre-commit check clean qdrant-dump
