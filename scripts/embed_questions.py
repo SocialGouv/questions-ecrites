@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Embed parliamentary questions from PostgreSQL into a Qdrant collection.
 
-Reads questions from the `questions` table (populated by ingest_opendata.py),
+Reads questions from the `questions` table (populated by ingest_an_legacy.py or ingest_senat.py),
 generates embeddings using ``texte_question``, and upserts the result into
 Qdrant.
 
@@ -34,7 +34,7 @@ Usage:
 Requires:
     - SOCLE_IA_API_KEY environment variable set
     - LLM_BASE_URL (or EMBEDDINGS_URL) environment variable set
-    - A running PostgreSQL with ingested questions (run ingest_opendata.py first)
+    - A running PostgreSQL with ingested questions (run ingest_an_legacy.py / ingest_senat.py first)
     - A running Qdrant instance
 """
 
