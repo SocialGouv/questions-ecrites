@@ -53,3 +53,53 @@ poetry run python scripts/cluster_questions.py
 ```
 
 Results are stored in `question_cluster_runs` and `question_cluster_members`. Re-run step 3 at any time to refresh — each run creates a new set of rows.
+
+## Assign questions to offices
+
+Routes each QE to the most relevant office based on office responsibility descriptions.
+
+### 1. Ingest office responsibilities
+
+Place XLSX files in `data/office_responsibilities/`. Each file must have columns: `direction`, `office_id`, `office_name`, `responsibilities`, `keywords`.
+
+```bash
+poetry run python scripts/ingest_office_responsibilities.py
+```
+
+Re-run at any time — unchanged files are skipped automatically.
+
+### 2. Assign a question
+
+```bash
+poetry run python scripts/assign_qe_to_office.py --question "Quel est le montant du RSA ?"
+```
+
+Returns a ranked JSON list of offices. Options:
+
+```
+--top-k 20        candidates retrieved per query unit (default: 20)
+--top-offices 5   offices to return (default: 5)
+--collection      Qdrant collection name (default: office_responsibilities)
+```
+
+### Evaluate assignment quality
+
+Measures Hit@1/3/5 and MRR against a ground-truth XLSX file with columns `question_id`, `question_text`, `expected_office_id`:
+
+```bash
+poetry run python scripts/eval_office_assignment.py --input data/qe_attributions_DGCS.xlsx
+```
+
+Options:
+
+```
+--top-k 20          candidates retrieved per question (default: 20)
+--top-offices 10    offices to rank per question (default: 10)
+--chunks all        chunk types to search: all, responsibilities, keywords (default: all)
+```
+
+### Reset
+
+```bash
+poetry run python scripts/reset_dbs.py
+```

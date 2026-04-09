@@ -3,7 +3,7 @@ name = "qe"
 version = "0.1.0"
 description = ""
 authors = [
-    {name = "Victor DEGLIAME",email = "victor.degliame@gmail.com"}
+    {name = "Victor DEGLIAME",email = "victor.degliame@sg.social.gouv.fr"}
 ]
 readme = "README.md"
 requires-python = ">=3.12"

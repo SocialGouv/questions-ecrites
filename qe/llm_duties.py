@@ -1,4 +1,4 @@
-"""Duty extraction helpers for job descriptions and questions."""
+"""Duty extraction helpers for parliamentary questions."""
 
 from __future__ import annotations
 
@@ -63,35 +63,6 @@ def parse_duties_payload(content: str) -> list[str]:  # noqa: C901
             f"{json.dumps(parsed)[:300]}{'…' if len(json.dumps(parsed)) > 300 else ''}"
         )
     return duties
-
-
-@dataclass(frozen=True)
-class LLMJobDescriptionDutyExtractor:
-    client: SocleLLMClient
-
-    def request_duties(self, text: str) -> list[str]:
-        system_message = (
-            "Vous êtes un analyste expert en ressources humaines. À partir d'une description de poste, "
-            "identifiez des missions ou devoirs distincts. Chaque devoir doit être exactement une "
-            "phrase complète, détaillée, autonome et en français. Développez chaque acronyme lors de sa première "
-            "apparition en écrivant « Forme longue (ACRONYME) ». Répondez uniquement avec du JSON strict, "
-            'en respectant le schéma suivant : {"duties": ["devoir 1", "devoir 2", ...]}'
-        )
-        user_message = (
-            "Description du poste :\n{text}\n\n"
-            "Règles :\n"
-            "1. Produisez entre 5 et 25 devoirs selon le contenu.\n"
-            "2. Chaque devoir doit décrire une seule action ou attente.\n"
-            "3. Les acronymes doivent être développés lorsqu'ils apparaissent.\n"
-            "4. Écrivez en français.\n"
-            "5. Fournissez uniquement du JSON, sans commentaire."
-        ).format(text=text.strip())
-        content = self.client.request_completion(
-            system_message=system_message,
-            user_message=user_message,
-        )
-        normalized = normalize_json_content(content)
-        return parse_duties_payload(normalized)
 
 
 @dataclass(frozen=True)
