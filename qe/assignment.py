@@ -14,6 +14,7 @@ def retrieve_candidates(
     qdrant: QdrantClient,
     collection: str,
     top_k: int,
+    query_filter: dict | None = None,
 ) -> list[dict]:
     """Embed each query unit, search Qdrant, and return deduplicated candidates.
 
@@ -29,6 +30,8 @@ def retrieve_candidates(
         qdrant: Qdrant REST client.
         collection: Name of the Qdrant collection to search.
         top_k: Number of nearest neighbours to retrieve per query unit.
+        query_filter: Optional Qdrant filter dict to restrict the search
+            (e.g. filter by ``chunk_type``).
 
     Returns:
         Deduplicated list of Qdrant candidate dicts, each with ``"id"``,
@@ -37,7 +40,7 @@ def retrieve_candidates(
     seen_ids: dict[str, dict] = {}
     for query_unit in query_units:
         query_vector = embedder.embed(query_unit)
-        candidates = qdrant.search(collection, query_vector, top_k)
+        candidates = qdrant.search(collection, query_vector, top_k, filter=query_filter)
         for candidate in candidates:
             point_id = candidate.get("id")
             if point_id and str(point_id) not in seen_ids:
@@ -54,7 +57,7 @@ def build_matches(
     """Rerank candidates against the query and return a flat list of match dicts.
 
     Uses the full original question text as the rerank query so the cross-encoder
-    judges "does this chunk help answer this question?" rather than a narrower
+    judges relevance against the complete question rather than a narrower
     duty sub-topic.
 
     Args:
@@ -64,7 +67,7 @@ def build_matches(
 
     Returns:
         List of match dicts sorted by rerank position (best first).  Each dict
-        contains ``rerank_position``, ``score``, and all relevant payload fields.
+        contains ``rerank_position``, ``score``, and office payload fields.
         Returns an empty list if ``candidates`` is empty.
     """
     if not candidates:
@@ -87,23 +90,21 @@ def build_matches(
         candidate = candidates[candidate_index]
         payload = candidate.get("payload") or {}
 
-        job_id = payload.get("job_id") or payload.get("job_path")
-        if not job_id:
+        office_id = payload.get("office_id")
+        if not office_id:
             continue
         matches.append(
             {
                 "rerank_position": rerank_position,
-                "score": result.get("score") or result.get("relevance_score"),
-                "job_id": job_id,
-                "job_title": payload.get("job_title"),
-                "user": payload.get("user"),
-                "job_path": payload.get("job_path") or payload.get("path"),
-                "section_title": payload.get("section_title"),
-                "section_index": payload.get("section_index"),
+                "score": result.get("relevance_score")
+                if result.get("relevance_score") is not None
+                else result.get("score"),
+                "office_id": office_id,
+                "office_name": payload.get("office_name"),
+                "direction": payload.get("direction"),
+                "chunk_type": payload.get("chunk_type"),
                 "chunk_index": payload.get("chunk_index"),
                 "chunk_preview": payload.get("chunk_preview"),
-                "chunk_type": payload.get("chunk_type"),
-                "duty_index": payload.get("duty_index"),
             }
         )
     return matches
@@ -112,46 +113,78 @@ def build_matches(
 def aggregate_matches(
     matches: list[dict],
     *,
-    max_chunks_per_job: int,
+    max_chunks_per_office: int,
 ) -> tuple[list[dict], dict[str, float]]:
-    """Aggregate reranked matches into per-job scores using sum-of-top-N.
+    """Aggregate reranked matches into per-office scores using sum-of-top-N.
 
-    Groups matches by job, keeps the ``max_chunks_per_job`` highest-scoring
-    chunks per job, and sums their scores.  This rewards jobs that cover
+    Groups matches by office, keeps the ``max_chunks_per_office`` highest-scoring
+    chunks per office, and sums their scores.  This rewards offices that cover
     multiple aspects of the question (breadth signal) while the cap prevents
-    a job with many chunks from winning on volume alone.
+    an office with many chunks from winning on volume alone.
 
     Args:
         matches: Flat list of match dicts from :func:`build_matches`.
-        max_chunks_per_job: Maximum number of chunks to count per job.
+        max_chunks_per_office: Maximum number of chunks to count per office.
 
     Returns:
-        A ``(kept_matches, score_by_user)`` tuple where:
+        A ``(kept_matches, score_by_office)`` tuple where:
 
         - ``kept_matches`` is the capped list sorted by descending score with
           sequential ``"rank"`` values assigned (1-based).
-        - ``score_by_user`` maps each ``user`` to their cumulative score (sum
-          of their top-N chunk scores).
+        - ``score_by_office`` maps each ``office_id`` to its cumulative score
+          (sum of its top-N chunk scores).
     """
-    chunks_by_job: dict[str, list[dict]] = {}
+    chunks_by_office: dict[str, list[dict]] = {}
     for match in matches:
-        key = str(match.get("job_id") or match.get("user") or "")
+        key = str(match.get("office_id") or "")
         if not key:
             continue
-        chunks_by_job.setdefault(key, []).append(match)
+        chunks_by_office.setdefault(key, []).append(match)
 
     kept_matches: list[dict] = []
-    score_by_user: dict[str, float] = {}
-    for job_chunks in chunks_by_job.values():
-        job_chunks.sort(key=lambda m: -(m.get("score") or 0.0))
-        top_chunks = job_chunks[:max_chunks_per_job]
+    score_by_office: dict[str, float] = {}
+    for office_chunks in chunks_by_office.values():
+        office_chunks.sort(key=lambda m: -(m.get("score") or 0.0))
+        top_chunks = office_chunks[:max_chunks_per_office]
         kept_matches.extend(top_chunks)
-        user = top_chunks[0].get("user")
-        if user:
-            score_by_user[user] = sum(float(m.get("score") or 0.0) for m in top_chunks)
+        office_id = top_chunks[0].get("office_id")
+        if office_id:
+            score_by_office[office_id] = sum(
+                float(m.get("score") or 0.0) for m in top_chunks
+            )
 
     kept_matches.sort(key=lambda m: -(m.get("score") or 0.0))
     for idx, m in enumerate(kept_matches, start=1):
         m["rank"] = idx
 
-    return kept_matches, score_by_user
+    return kept_matches, score_by_office
+
+
+def match_question_to_offices(
+    question: str,
+    *,
+    embedder: EmbeddingClient,
+    qdrant: QdrantClient,
+    reranker: RerankClient,
+    collection: str,
+    top_k: int,
+    query_filter: dict | None = None,
+    max_chunks_per_office: int = 2,
+) -> tuple[list[dict], dict[str, float]]:
+    """Embed, search, rerank, and aggregate a single question against offices.
+
+    Convenience wrapper around :func:`retrieve_candidates`,
+    :func:`build_matches`, and :func:`aggregate_matches`.  Returns the same
+    ``(kept_matches, score_by_office)`` tuple so callers can do their own
+    post-processing.
+    """
+    candidates = retrieve_candidates(
+        query_units=[question],
+        embedder=embedder,
+        qdrant=qdrant,
+        collection=collection,
+        top_k=top_k,
+        query_filter=query_filter,
+    )
+    matches = build_matches(candidates=candidates, reranker=reranker, query=question)
+    return aggregate_matches(matches, max_chunks_per_office=max_chunks_per_office)

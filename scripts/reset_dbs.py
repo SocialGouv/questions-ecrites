@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Reset the Qdrant collection and ingest manifest for job descriptions."""
+"""Reset a Qdrant collection and the corresponding ingest manifest."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from pathlib import Path
 from qe import db
 from qe.clients.qdrant import QdrantClient
 
-DEFAULT_INPUT_DIR = Path("data/job_descriptions")
-DEFAULT_COLLECTION = "job_descriptions"
+DEFAULT_INPUT_DIR = Path("data/office_responsibilities")
+DEFAULT_COLLECTION = "office_responsibilities"
 DEFAULT_QDRANT_URL = "http://localhost:6333"
 MANIFEST_FILENAME = ".ingest_manifest.json"
 

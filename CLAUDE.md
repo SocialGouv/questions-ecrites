@@ -2,12 +2,12 @@
 
 ## Project overview
 
-Expert assignment system for French parliamentary questions ("questions écrites"). Given unanswered parliamentary questions and job descriptions of agents in French ministries, the system assigns each question to the most relevant expert using semantic embeddings, vector search, and reranking.
+Office assignment system for French parliamentary questions ("questions écrites"). Given unanswered parliamentary questions and responsibility descriptions of offices within French ministry directions, the system assigns each question to the most relevant office using semantic embeddings, vector search, and reranking.
 
 **Pipeline:**
 
-1. **Ingest** job descriptions (PDF/DOCX) → chunk → embed → store in Qdrant
-2. **Assign** questions → extract duty units via LLM → embed → search Qdrant → rerank → output JSON
+1. **Ingest** office responsibilities (XLSX) → chunk → embed → store in Qdrant
+2. **Assign** questions → embed → search Qdrant → rerank → output JSON
 
 ## Project conventions
 
@@ -26,28 +26,24 @@ qe/                         # Main package (no __init__.py)
 │   ├── llm.py              # SocleLLMClient → Socle IA chat completions
 │   ├── qdrant.py           # QdrantClient → Qdrant vector DB (REST)
 │   └── rerank.py           # RerankClient → Albert reranking API
-├── assignment.py           # retrieve_candidates(), build_matches(), aggregate_matches()
-├── chunking.py             # HeuristicChunker, LLMDutyChunker, ChunkCache
+├── assignment.py           # retrieve_candidates(), build_matches(), aggregate_matches(), match_question_to_offices()
+├── chunking.py             # Chunk dataclass, Chunker protocol
 ├── config.py               # Settings dataclass, get_settings()
 ├── db.py                   # PostgreSQL: ingest_manifest + chunk_cache tables
 ├── documents.py            # load_documents(), read_document() (.txt/.pdf/.doc/.docx)
 ├── hashing.py              # stable_point_id(), stable_chunk_id(), compute_content_hash()
-├── ingestion.py            # delete_job_chunks(), ingest_files()
-└── llm_duties.py           # LLMJobDescriptionDutyExtractor, LLMQuestionDutyExtractor
+├── llm_duties.py           # DutyExtractor protocol
+└── office_ingestion.py     # parse_office_xlsx(), ingest_office_xlsx()
 
 scripts/
-├── ingest_job_descriptions.py      # Main ingestion script
-├── assign_questions_to_expert.py   # Main assignment script
-├── reset_dbs.py                    # Reset Qdrant collection + PostgreSQL state
-└── eval_assignments.py             # Evaluation metrics (Hit@1, Hit@3, MRR, etc.)
+├── ingest_office_responsibilities.py  # Ingest office XLSX files into Qdrant
+├── assign_qe_to_office.py             # Assign a question to the most relevant office
+├── eval_office_assignment.py          # Evaluate assignment quality against a ground-truth XLSX
+└── reset_dbs.py                       # Reset Qdrant collection + PostgreSQL state
 
 data/
-├── job_descriptions/       # Input: job description files (PDF/DOCX)
-├── qe_no_answers/          # Input: questions to assign
-├── qe_with_answers/        # Input: questions with reference answers (for eval)
-├── assignments.json        # Output: detailed assignments
-├── assignments_summary.json # Output: aggregated scores per question
-└── eval_results.xlsx       # Output: evaluation metrics
+├── office_responsibilities/  # Input: office responsibility XLSX files
+└── qe_no_answers/            # Input: questions to assign
 ```
 
 ## External services
@@ -57,29 +53,22 @@ data/
 | **Socle IA**   | Embeddings + LLM chat  | `LLM_BASE_URL`, `SOCLE_IA_API_KEY`, `LLM_MODEL`                |
 | **Albert**     | Reranking              | `ALBERT_API_KEY`, default model `openweight-rerank`            |
 | **Qdrant**     | Vector DB              | Local via docker-compose                                       |
-| **PostgreSQL** | Manifest + chunk cache | `PGHOST/PORT/USER/PASSWORD/DATABASE`, local via docker-compose |
+| **PostgreSQL** | Ingest manifest        | `PGHOST/PORT/USER/PASSWORD/DATABASE`, local via docker-compose |
 
 Default embedding model: `BAAI/bge-m3` (via `EMBEDDING_MODEL` env var).
 
 ## Database schema (Alembic)
 
 - `ingest_manifest(path PK, document_hash, updated_at)` — tracks ingested files for incremental updates
-- `chunk_cache(strategy, document_hash PK, chunks JSON, updated_at)` — caches LLM-chunked results to avoid re-processing
 
 Run migrations: `poetry run alembic upgrade head`
 
-## Chunking strategies
+## Office chunking
 
-- `heuristic` — splits by detected headings (uppercase lines, numbered sections), then by char limit (1800 chars, 200 overlap, min 350)
-- `llm_duty` / `llm_responsibility` — LLM extracts 5–25 duties as semantic chunks, cached in PostgreSQL
+Each office row in an XLSX produces 2 Qdrant chunks:
 
-## Evaluation metrics
-
-Computed by `eval_assignments.py` against `data/attributions.json` (ground truth):
-
-- **Hit@1, Hit@3** — whether the correct expert appears in top-1/3 results
-- **MRR** — mean reciprocal rank
-- **Score Share, Score Ratio** — rerank score fraction on correct experts
+- `responsibilities` — `"{office_name}\n{responsibilities}"` — semantic coverage
+- `keywords` — `"{office_name}: {keywords}"` — exact-term matching via embedding
 
 ## Testing
 
