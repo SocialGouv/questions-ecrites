@@ -6,8 +6,10 @@ Office assignment system for French parliamentary questions ("questions écrites
 
 **Pipeline:**
 
-1. **Ingest** office responsibilities (XLSX) → chunk → embed → store in Qdrant
-2. **Assign** questions → embed → search Qdrant → rerank → output JSON
+1. **Ingest** office responsibilities (XLSX) → chunk → embed → store in Qdrant (`office_responsibilities` collection)
+2. **Ingest** questions → parse → store in PostgreSQL → embed → store in Qdrant (`questions_opendata` collection)
+3. **Assign** questions → fetch stored vector from Qdrant → search offices → rerank → return ranked offices with relevance scores
+4. **Serve** assignments via HTTP API (`api/main.py` — FastAPI, `GET /api/questions/{question_id}/attributions`)
 
 ## Project conventions
 
@@ -20,6 +22,9 @@ Office assignment system for French parliamentary questions ("questions écrites
 ## Key directories and files
 
 ```bash
+api/
+└── main.py                 # FastAPI server: GET /api/questions/{question_id}/attributions
+
 qe/                         # Main package (no __init__.py)
 ├── clients/
 │   ├── embedding.py        # EmbeddingClient → Socle IA embeddings API
@@ -31,13 +36,15 @@ qe/                         # Main package (no __init__.py)
 ├── config.py               # Settings dataclass, get_settings()
 ├── db.py                   # PostgreSQL: ingest_manifest + chunk_cache tables
 ├── documents.py            # load_documents(), read_document() (.txt/.pdf/.doc/.docx)
-├── hashing.py              # stable_point_id(), stable_chunk_id(), compute_content_hash()
+├── hashing.py              # stable_point_id(), stable_chunk_id(), stable_question_point_id(), compute_content_hash()
 ├── llm_duties.py           # DutyExtractor protocol
+├── models.py               # SQLAlchemy models: Question, Reponse, QuestionStateChange, …
 └── office_ingestion.py     # parse_office_xlsx(), ingest_office_xlsx()
 
 scripts/
 ├── ingest_office_responsibilities.py  # Ingest office XLSX files into Qdrant
-├── assign_qe_to_office.py             # Assign a question to the most relevant office
+├── embed_questions.py                 # Embed questions from PostgreSQL into Qdrant (questions_opendata)
+├── assign_qe_to_office.py             # CLI: assign a question to the most relevant office
 ├── eval_office_assignment.py          # Evaluate assignment quality against a ground-truth XLSX
 └── reset_dbs.py                       # Reset Qdrant collection + PostgreSQL state
 
@@ -56,6 +63,27 @@ data/
 | **PostgreSQL** | Ingest manifest        | `PGHOST/PORT/USER/PASSWORD/DATABASE`, local via docker-compose |
 
 Default embedding model: `BAAI/bge-m3` (via `EMBEDDING_MODEL` env var).
+
+## Qdrant collections
+
+| Collection               | Contents                                    | Populated by                              |
+| ------------------------ | ------------------------------------------- | ----------------------------------------- |
+| `office_responsibilities`| Office chunks (responsibilities + keywords) | `scripts/ingest_office_responsibilities.py` |
+| `questions_opendata`     | Embedded parliamentary questions            | `scripts/embed_questions.py`              |
+
+Point IDs in both collections are deterministic UUIDs derived from SHA-256 hashes (see `qe/hashing.py`). Use `stable_question_point_id(question_id)` to resolve a question's Qdrant point ID from its composite string ID (e.g. `AN-17-QE-12345`).
+
+## API server
+
+```bash
+ALBERT_API_KEY=... poetry run uvicorn api.main:app --reload
+```
+
+`GET /api/questions/{question_id}/attributions?top_k=3` — returns the top-N office suggestions for a question. The question's embedding is fetched from `questions_opendata` (no Socle IA call); only the Albert reranker is called. Each suggestion includes `rank`, `office_id`, `office_name`, `direction`, `score` (aggregated rerank score), and `relevance` (absolute relevance as a percentage, 0.0–100.0).
+
+**Relevance:** `relevance` is a blend of two signals (70 % absolute + 30 % relative). The absolute component is `sigmoid(best_chunk_score) × 100` — the model's raw judgment, independent of other results. The relative component is a pool-median-centred linear adjustment: each logit above the pool median adds ~6 pp, each logit below subtracts ~6 pp. The blend keeps tightly-clustered scores close together while making real score gaps visible. A question with no good match yields a low relevance for every office.
+
+Configurable via env vars: `ALBERT_API_KEY` (required), `QDRANT_URL` (default `http://localhost:6333`), `CORS_ORIGINS` (default `http://localhost:3000`).
 
 ## Database schema (Alembic)
 

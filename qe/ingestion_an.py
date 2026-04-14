@@ -468,13 +468,27 @@ def _parse_an_question_element(  # noqa: C901
             texte_reponse = _t(first_tr, "texte")
             date_reponse = _parse_an_date(_t(first_tr.find(tag("infoJO")), "dateJO"))
 
-    # Synthetic reponse_id — the AN legacy format has no JO page number, so we
-    # use the question id as the unique key to link to the reponses table.
+    # Extract pageJO from cloture/infoJO (present for all REP_PUB answers).
+    page_reponse_jo: int | None = None
+    page_jo_str = _t(elem.find(tag("cloture")), "infoJO", "pageJO")
+    if page_jo_str:
+        try:
+            page_reponse_jo = int(page_jo_str)
+        except ValueError:
+            pass
+
+    # Use JO date + page as reponse_id so questions that received the same
+    # joint response (same JO publication page) share a reponse_id.
+    # Falls back to a per-question synthetic key only when page data is absent.
     reponse_id: str | None = None
     no_publication: str | None = None
     if texte_reponse:
-        reponse_id = f"AN-LEGACY-{qid}"
-        no_publication = "LEGACY"
+        if date_reponse and page_reponse_jo is not None:
+            no_publication = date_reponse.strftime("%Y%m%d")
+            reponse_id = f"AN-{no_publication}-{page_reponse_jo}"
+        else:
+            reponse_id = f"AN-LEGACY-{qid}"
+            no_publication = "LEGACY"
 
     return ParsedQuestion(
         id=qid,
@@ -493,6 +507,7 @@ def _parse_an_question_element(  # noqa: C901
         no_publication=no_publication,
         texte_reponse=texte_reponse,
         date_reponse_jo=date_reponse,
+        page_reponse_jo=page_reponse_jo,
     )
 
 

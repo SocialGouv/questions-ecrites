@@ -65,4 +65,8 @@ clean:
 	rm -rf dist build *.egg-info
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
-.PHONY: install test integration_test lint lint-fix format format-check typecheck security pre-commit check clean qdrant-dump
+# Development server
+dev:
+	poetry run uvicorn api.main:app --reload
+
+.PHONY: install test integration_test lint lint-fix format format-check typecheck security pre-commit check clean qdrant-dump dev
