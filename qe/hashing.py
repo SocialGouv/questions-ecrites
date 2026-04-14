@@ -26,6 +26,17 @@ def stable_chunk_id(path: Path, section_index: int, chunk_index: int) -> str:
     return str(UUID(digest[:32]))
 
 
+def stable_question_point_id(question_id: str) -> str:
+    """Deterministic Qdrant point UUID for a question, derived from its string ID.
+
+    Mirrors the ``_question_point_id`` logic used in ``scripts/embed_questions.py``
+    so that any code needing to look up a question point can share a single
+    implementation.
+    """
+    digest = hashlib.sha256(question_id.encode("utf-8")).hexdigest()
+    return str(UUID(digest[:32]))
+
+
 def make_preview(text: str, max_chars: int = 240) -> str:
     """Produce a short single-line preview of *text*."""
     normalized = re.sub(r"\s+", " ", text).strip()

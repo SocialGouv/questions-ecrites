@@ -103,3 +103,63 @@ Options:
 ```bash
 poetry run python scripts/reset_dbs.py
 ```
+
+## Attribution API
+
+Exposes office attribution suggestions over HTTP for the frontend (`qe-front`).
+
+### Prerequisites
+
+Both Qdrant collections must be populated before starting the server:
+
+```bash
+# 1. Office responsibilities
+poetry run python scripts/ingest_office_responsibilities.py
+
+# 2. Questions (embed into questions_opendata)
+poetry run python scripts/embed_questions.py
+```
+
+### Start the server
+
+```bash
+poetry run uvicorn api.main:app --reload
+```
+
+The server starts on `http://localhost:8000` by default.
+
+### `GET /api/questions/{question_id}/attributions`
+
+Returns the top 3 office suggestions for a question. The question's embedding is read directly from Qdrant — no call to Socle IA is made.
+
+```bash
+curl http://localhost:8000/api/questions/AN-17-QE-12345/attributions
+```
+
+```json
+{
+  "question_id": "AN-17-QE-12345",
+  "attributions": [
+    {
+      "rank": 1,
+      "office_id": "...",
+      "office_name": "Sous-direction des affaires sociales",
+      "direction": "Direction générale du travail",
+      "score": 1.8432,
+      "confidence": 0.87
+    }
+  ]
+}
+```
+
+`confidence` is a calibrated 0–1 value (sigmoid of the Albert cross-encoder logit). It is meaningful in absolute terms: values above ~0.7 indicate a strong match; values below ~0.3 indicate the question is likely outside this office's scope.
+
+Optional query param: `top_k` (default `3`).
+
+### Environment variables
+
+| Variable        | Required | Default                  | Description                     |
+| --------------- | -------- | ------------------------ | ------------------------------- |
+| `ALBERT_API_KEY`| Yes      | —                        | Albert reranking API key        |
+| `QDRANT_URL`    | No       | `http://localhost:6333`  | Qdrant base URL                 |
+| `CORS_ORIGINS`  | No       | `http://localhost:3000`  | Comma-separated allowed origins |

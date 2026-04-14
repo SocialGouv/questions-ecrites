@@ -9,38 +9,61 @@ from qe.clients.rerank import RerankClient
 
 def retrieve_candidates(
     *,
-    query_units: list[str],
-    embedder: EmbeddingClient,
+    query_units: list[str] | None = None,
+    precomputed_vectors: list[list[float]] | None = None,
+    embedder: EmbeddingClient | None = None,
     qdrant: QdrantClient,
     collection: str,
     top_k: int,
     query_filter: dict | None = None,
 ) -> list[dict]:
-    """Embed each query unit, search Qdrant, and return deduplicated candidates.
+    """Search Qdrant and return deduplicated candidates.
 
-    Each query unit is embedded independently and used to retrieve ``top_k``
-    candidates from Qdrant.  Results are deduplicated by point ID so that the
-    same chunk is never sent to the reranker more than once, regardless of how
-    many query units matched it.
+    Accepts either raw query texts (which are embedded on the fly) or
+    pre-computed vectors (which bypass the embedding step entirely).  The two
+    sources can be combined: all resulting vectors are searched and their
+    results are merged.
+
+    Each vector is searched independently and results are deduplicated by point
+    ID so that the same chunk is never sent to the reranker more than once.
 
     Args:
-        query_units: Texts to use as retrieval queries (typically the full
-            question followed by LLM-extracted duty units).
-        embedder: Client for generating dense embeddings.
+        query_units: Texts to embed and use as retrieval queries.  Requires
+            ``embedder`` to be provided when non-empty.
+        precomputed_vectors: Dense vectors to use directly for search, skipping
+            the embedding step.  Useful when the question is already embedded
+            in Qdrant (e.g. ``questions_opendata`` collection).
+        embedder: Client for generating dense embeddings.  Required when
+            ``query_units`` is provided; may be ``None`` otherwise.
         qdrant: Qdrant REST client.
         collection: Name of the Qdrant collection to search.
-        top_k: Number of nearest neighbours to retrieve per query unit.
+        top_k: Number of nearest neighbours to retrieve per vector.
         query_filter: Optional Qdrant filter dict to restrict the search
             (e.g. filter by ``chunk_type``).
 
     Returns:
         Deduplicated list of Qdrant candidate dicts, each with ``"id"``,
         ``"score"``, and ``"payload"`` keys.
+
+    Raises:
+        ValueError: If neither ``query_units`` nor ``precomputed_vectors`` are
+            provided, or if ``query_units`` are provided without an
+            ``embedder``.
     """
+    if not query_units and not precomputed_vectors:
+        raise ValueError(
+            "At least one of query_units or precomputed_vectors must be provided."
+        )
+    if query_units and embedder is None:
+        raise ValueError("embedder is required when query_units are provided.")
+
+    vectors: list[list[float]] = list(precomputed_vectors or [])
+    for query_unit in query_units or []:
+        vectors.append(embedder.embed(query_unit))  # type: ignore[union-attr]
+
     seen_ids: dict[str, dict] = {}
-    for query_unit in query_units:
-        query_vector = embedder.embed(query_unit)
-        candidates = qdrant.search(collection, query_vector, top_k, filter=query_filter)
+    for vector in vectors:
+        candidates = qdrant.search(collection, vector, top_k, filter=query_filter)
         for candidate in candidates:
             point_id = candidate.get("id")
             if point_id and str(point_id) not in seen_ids:

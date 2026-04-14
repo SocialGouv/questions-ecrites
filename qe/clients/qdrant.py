@@ -45,9 +45,12 @@ class QdrantClient:
         response.raise_for_status()
         return True
 
-    def get_point(self, name: str, point_id: str) -> dict | None:
+    def get_point(
+        self, name: str, point_id: str, *, with_vectors: bool = False
+    ) -> dict | None:
         response = requests.get(
             f"{self.base_url}/collections/{name}/points/{point_id}",
+            params={"with_vectors": str(with_vectors).lower()},
             timeout=30,
         )
         if response.status_code == 404:
