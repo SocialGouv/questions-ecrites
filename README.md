@@ -37,6 +37,17 @@ poetry run python scripts/ingest_opendata.py --dir data/opendata/
 
 Add `--dry-run` to parse archives without writing to the database.
 
+## Embed answers
+
+Embeds all answers already stored in PostgreSQL into the `answers_opendata` Qdrant collection:
+
+```bash
+docker compose up qdrant -d
+poetry run python scripts/embed_answers.py
+```
+
+Incremental — already-embedded answers are skipped. Use `--source AN` or `--source SENAT` to restrict to one chamber. This also runs automatically at the end of `ingest_an_legacy.py` and `ingest_senat.py`.
+
 ## Compute question clusters
 
 Embeds all questions into Qdrant, then clusters them by semantic similarity and saves the results to PostgreSQL.
