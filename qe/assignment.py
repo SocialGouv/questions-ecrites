@@ -16,6 +16,7 @@ def retrieve_candidates(
     collection: str,
     top_k: int,
     query_filter: dict | None = None,
+    score_threshold: float | None = None,
 ) -> list[dict]:
     """Search Qdrant and return deduplicated candidates.
 
@@ -40,6 +41,8 @@ def retrieve_candidates(
         top_k: Number of nearest neighbours to retrieve per vector.
         query_filter: Optional Qdrant filter dict to restrict the search
             (e.g. filter by ``chunk_type``).
+        score_threshold: Optional minimum cosine similarity score (0.0–1.0).
+            Candidates below this threshold are dropped before reranking.
 
     Returns:
         Deduplicated list of Qdrant candidate dicts, each with ``"id"``,
@@ -63,12 +66,58 @@ def retrieve_candidates(
 
     seen_ids: dict[str, dict] = {}
     for vector in vectors:
-        candidates = qdrant.search(collection, vector, top_k, filter=query_filter)
+        candidates = qdrant.search(
+            collection,
+            vector,
+            top_k,
+            filter=query_filter,
+            score_threshold=score_threshold,
+        )
         for candidate in candidates:
             point_id = candidate.get("id")
             if point_id and str(point_id) not in seen_ids:
                 seen_ids[str(point_id)] = candidate
     return list(seen_ids.values())
+
+
+def rerank_candidates(
+    candidates: list[dict],
+    reranker: RerankClient,
+    query: str,
+    text_field: str,
+) -> list[tuple[dict, float]]:
+    """Rerank candidates by relevance and return (candidate, score) pairs.
+
+    Args:
+        candidates: Qdrant candidate dicts with ``"id"``, ``"score"``,
+            ``"payload"`` keys.
+        reranker: Albert rerank client.
+        query: The rerank query (full question text).
+        text_field: Payload key whose value is used as the document text.
+
+    Returns:
+        List of ``(candidate, rerank_score)`` tuples sorted by descending
+        score.  Empty if ``candidates`` is empty.
+    """
+    if not candidates:
+        return []
+
+    texts = [(c.get("payload") or {}).get(text_field) or "" for c in candidates]
+    results = reranker.rerank(query=query, documents=texts, top_n=len(texts))
+
+    scored: list[tuple[dict, float]] = []
+    for result in results:
+        idx = result.get("index")
+        if idx is None or idx >= len(candidates):
+            continue
+        score = (
+            result.get("relevance_score")
+            if result.get("relevance_score") is not None
+            else result.get("score")
+        )
+        scored.append((candidates[idx], float(score or 0.0)))
+
+    return sorted(scored, key=lambda x: -x[1])
 
 
 def build_matches(
@@ -93,35 +142,18 @@ def build_matches(
         contains ``rerank_position``, ``score``, and office payload fields.
         Returns an empty list if ``candidates`` is empty.
     """
-    if not candidates:
-        return []
-
-    candidate_texts: list[str] = [
-        (c.get("payload") or {}).get("text") or "" for c in candidates
-    ]
-    rerank_results = reranker.rerank(
-        query=query,
-        documents=candidate_texts,
-        top_n=len(candidate_texts),
-    )
+    scored = rerank_candidates(candidates, reranker, query, text_field="text")
 
     matches: list[dict] = []
-    for rerank_position, result in enumerate(rerank_results, start=1):
-        candidate_index = result.get("index")
-        if candidate_index is None or candidate_index >= len(candidates):
-            continue
-        candidate = candidates[candidate_index]
+    for rerank_position, (candidate, score) in enumerate(scored, start=1):
         payload = candidate.get("payload") or {}
-
         office_id = payload.get("office_id")
         if not office_id:
             continue
         matches.append(
             {
                 "rerank_position": rerank_position,
-                "score": result.get("relevance_score")
-                if result.get("relevance_score") is not None
-                else result.get("score"),
+                "score": score,
                 "office_id": office_id,
                 "office_name": payload.get("office_name"),
                 "direction": payload.get("direction"),

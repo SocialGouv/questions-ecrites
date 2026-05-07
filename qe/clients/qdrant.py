@@ -90,6 +90,7 @@ class QdrantClient:
         top_k: int,
         *,
         filter: dict | None = None,
+        score_threshold: float | None = None,
     ) -> list[dict]:
         payload: dict = {
             "vector": vector,
@@ -99,6 +100,8 @@ class QdrantClient:
         }
         if filter is not None:
             payload["filter"] = filter
+        if score_threshold is not None:
+            payload["score_threshold"] = score_threshold
         response = requests.post(
             f"{self.base_url}/collections/{collection}/points/search",
             json=payload,
