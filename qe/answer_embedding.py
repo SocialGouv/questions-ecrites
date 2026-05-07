@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from itertools import islice
+from itertools import batched
 
 from sqlalchemy import exists, select
 from sqlalchemy.orm import selectinload
@@ -40,15 +40,6 @@ class EmbedStats:
     deleted: int
 
 
-def _batched(iterable, n):
-    it = iter(iterable)
-    while True:
-        chunk = list(islice(it, n))
-        if not chunk:
-            return
-        yield chunk
-
-
 def _load_answers(source: str | None, legislature: int | None) -> list[Reponse]:
     stmt = select(Reponse).options(selectinload(Reponse.questions))
     if source:
@@ -64,19 +55,25 @@ def _load_answers(source: str | None, legislature: int | None) -> list[Reponse]:
         return list(session.execute(stmt).scalars().all())
 
 
-def _load_all_answer_ids() -> set[str]:
+def _load_all_answer_ids(source: str | None) -> set[str]:
+    stmt = select(Reponse.id)
+    if source:
+        stmt = stmt.where(Reponse.source == source)
     with db.get_session() as session:
-        return set(session.execute(select(Reponse.id)).scalars().all())
+        return set(session.execute(stmt).scalars().all())
 
 
 def _load_existing_points(
-    qdrant: QdrantClient, collection: str
+    qdrant: QdrantClient, collection: str, source: str | None
 ) -> dict[str, tuple[str, str]]:
-    """Scroll all existing points (no vectors) and return {reponse_id: (model, hash)}."""
+    """Scroll existing points matching the active source filter; return {reponse_id: (model, hash)}."""
     if not qdrant.collection_exists(collection):
         return {}
     logger.info("Loading existing points from Qdrant collection '%s'...", collection)
-    points = qdrant.scroll_all(collection, with_vectors=False)
+    filter_ = (
+        {"must": [{"key": "source", "match": {"value": source}}]} if source else None
+    )
+    points = qdrant.scroll_all(collection, filter=filter_, with_vectors=False)
     result: dict[str, tuple[str, str]] = {}
     for point in points:
         payload = point.get("payload", {})
@@ -123,11 +120,11 @@ def embed_answers(  # noqa: C901
 
     logger.info("Loaded %d answer(s) from PostgreSQL.", len(answers))
 
-    existing = _load_existing_points(qdrant, collection)
+    existing = _load_existing_points(qdrant, collection, source)
 
-    # Stale cleanup: use all DB IDs (unfiltered) so out-of-filter answers are
-    # never incorrectly treated as stale.
-    all_db_ids = _load_all_answer_ids()
+    # Stale cleanup: scope to the same source filter so a scoped run never
+    # touches points outside its remit.
+    all_db_ids = _load_all_answer_ids(source)
     stale_ids = [rid for rid in existing if rid not in all_db_ids]
     if stale_ids:
         logger.info("Removing %d stale point(s) (deleted from DB)...", len(stale_ids))
@@ -181,12 +178,19 @@ def embed_answers(  # noqa: C901
     first_embeddings = embedder.embed_batch(first_batch_texts)
     vector_size = len(first_embeddings[0])
 
-    if not qdrant.collection_exists(collection):
+    existing_dim = qdrant.get_vector_size(collection)
+    if existing_dim is None:
         qdrant.create_collection(collection, vector_size=vector_size)
         logger.info("Created collection '%s' (dim=%d).", collection, vector_size)
+    elif existing_dim != vector_size:
+        raise ValueError(
+            f"Collection '{collection}' has dimension {existing_dim} but "
+            f"model '{embedding_model}' produces dimension {vector_size}. "
+            "Delete the collection or switch to the correct model."
+        )
 
     upserted = 0
-    batches = list(_batched(to_embed, batch_size))
+    batches = list(batched(to_embed, batch_size))
 
     with tqdm(total=len(to_embed), unit="a", desc="Embedding answers") as progress:
         for batch_idx, batch in enumerate(batches):
@@ -242,7 +246,7 @@ def embed_answers(  # noqa: C901
     )
 
 
-def try_embed_answers_from_env(source: str) -> None:
+def try_embed_answers_from_env(source: str) -> EmbedStats | None:
     """Embed answers into Qdrant using env-configured clients.
 
     Intended for use at the end of ingest scripts. Logs a warning and returns
@@ -260,7 +264,7 @@ def try_embed_answers_from_env(source: str) -> None:
             "Set the required env vars and run scripts/embed_answers.py manually.",
             exc,
         )
-        return
+        return None
 
     qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
     embedder = EmbeddingClient(
@@ -283,7 +287,9 @@ def try_embed_answers_from_env(source: str) -> None:
             stats.skipped,
             stats.deleted,
         )
+        return stats
     except Exception as exc:
         logger.warning(
             "Answer embedding failed: %s. Run scripts/embed_answers.py manually.", exc
         )
+        return None

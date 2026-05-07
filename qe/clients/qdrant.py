@@ -20,6 +20,15 @@ class QdrantClient:
         response.raise_for_status()
         return True
 
+    def get_vector_size(self, name: str) -> int | None:
+        """Return the vector size of an existing collection, or None if absent."""
+        response = requests.get(f"{self.base_url}/collections/{name}", timeout=30)
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        result = response.json().get("result", {})
+        return result.get("config", {}).get("params", {}).get("vectors", {}).get("size")
+
     def create_collection(self, name: str, vector_size: int) -> None:
         payload = {
             "vectors": {

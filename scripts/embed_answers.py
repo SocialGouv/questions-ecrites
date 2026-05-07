@@ -112,7 +112,7 @@ def main() -> None:
         else None
     )
 
-    legislature = args.legislature or None  # treat 0 as "all"
+    legislature = None if args.legislature == 0 else args.legislature
 
     logger.info(
         "Starting — source: %s, legislature: %s, collection: %s, model: %s, batch_size: %d%s",
