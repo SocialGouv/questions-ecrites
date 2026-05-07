@@ -18,6 +18,7 @@ Office assignment system for French parliamentary questions ("questions écrites
 - **Protocol classes** for plugin interfaces: `Chunker`, `DutyExtractor`.
 - **Deterministic UUIDs** from SHA-256 hashes of file paths/content for idempotent Qdrant upserts.
 - **Python >= 3.12**, managed with Poetry. Use `poetry run` to run scripts.
+- **Keep code DRY.** Before adding logic to a script, check whether it already exists in `qe/`. Shared helpers belong in the package, not copy-pasted across scripts.
 
 ## Key directories and files
 
@@ -36,7 +37,8 @@ qe/                         # Main package (no __init__.py)
 ├── config.py               # Settings dataclass, get_settings()
 ├── db.py                   # PostgreSQL: ingest_manifest + chunk_cache tables
 ├── documents.py            # load_documents(), read_document() (.txt/.pdf/.doc/.docx)
-├── hashing.py              # stable_point_id(), stable_chunk_id(), stable_question_point_id(), compute_content_hash()
+├── answer_embedding.py     # embed_answers() — embeds Reponse rows into answers_opendata Qdrant collection
+├── hashing.py              # stable_point_id(), stable_chunk_id(), stable_question_point_id(), stable_answer_point_id(), compute_content_hash()
 ├── llm_duties.py           # DutyExtractor protocol
 ├── models.py               # SQLAlchemy models: Question, Reponse, QuestionStateChange, …
 └── office_ingestion.py     # parse_office_xlsx(), ingest_office_xlsx()
@@ -44,6 +46,7 @@ qe/                         # Main package (no __init__.py)
 scripts/
 ├── ingest_office_responsibilities.py  # Ingest office XLSX files into Qdrant
 ├── embed_questions.py                 # Embed questions from PostgreSQL into Qdrant (questions_opendata)
+├── embed_answers.py                   # Embed answers from PostgreSQL into Qdrant (answers_opendata)
 ├── assign_qe_to_office.py             # CLI: assign a question to the most relevant office
 ├── eval_office_assignment.py          # Evaluate assignment quality against a ground-truth XLSX
 └── reset_dbs.py                       # Reset Qdrant collection + PostgreSQL state
@@ -70,8 +73,9 @@ Default embedding model: `BAAI/bge-m3` (via `EMBEDDING_MODEL` env var).
 | ------------------------ | ------------------------------------------- | ----------------------------------------- |
 | `office_responsibilities`| Office chunks (responsibilities + keywords) | `scripts/ingest_office_responsibilities.py` |
 | `questions_opendata`     | Embedded parliamentary questions            | `scripts/embed_questions.py`              |
+| `answers_opendata`       | Embedded parliamentary answers (Reponse)    | `scripts/embed_answers.py`, auto-called by `scripts/ingest_an_legacy.py` and `scripts/ingest_senat.py` |
 
-Point IDs in both collections are deterministic UUIDs derived from SHA-256 hashes (see `qe/hashing.py`). Use `stable_question_point_id(question_id)` to resolve a question's Qdrant point ID from its composite string ID (e.g. `AN-17-QE-12345`).
+Point IDs in all collections are deterministic UUIDs derived from SHA-256 hashes (see `qe/hashing.py`). Use `stable_question_point_id(question_id)` to resolve a question's Qdrant point ID, and `stable_answer_point_id(reponse_id)` for answers.
 
 ## API server
 

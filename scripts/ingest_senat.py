@@ -2,12 +2,14 @@
 """Ingest Sénat questions from the full-database SQL dump.
 
 Processes the ZIP downloaded by download_senat.py and upserts questions
-écrites from legislatures 14–17 into PostgreSQL.
+écrites from legislatures 14–17 into PostgreSQL, then embeds newly ingested
+answers into Qdrant.
 
 Usage:
     poetry run python scripts/ingest_senat.py --file data/senat/questions.zip
     poetry run python scripts/ingest_senat.py --file data/senat/questions.zip --dry-run
     poetry run python scripts/ingest_senat.py --file data/senat/questions.zip --force
+    poetry run python scripts/ingest_senat.py --file data/senat/questions.zip --skip-embed
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import zipfile
 from pathlib import Path
 
 from qe import db
+from qe.answer_embedding import try_embed_answers_from_env
 from qe.ingestion_senat import ingest_senat_dump, parse_senat_sql_dump
 
 logging.basicConfig(
@@ -78,6 +81,11 @@ def main() -> None:
         action="store_true",
         help="Re-ingest even if the file hash is already in the manifest",
     )
+    parser.add_argument(
+        "--skip-embed",
+        action="store_true",
+        help="Skip embedding answers into Qdrant after ingest",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
@@ -115,6 +123,9 @@ def main() -> None:
         stats.questions_inserted,
         stats.ministeres_created,
     )
+
+    if not args.skip_embed:
+        try_embed_answers_from_env("SENAT")
 
 
 if __name__ == "__main__":

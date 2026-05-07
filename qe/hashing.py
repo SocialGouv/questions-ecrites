@@ -37,6 +37,12 @@ def stable_question_point_id(question_id: str) -> str:
     return str(UUID(digest[:32]))
 
 
+def stable_answer_point_id(reponse_id: str) -> str:
+    """Deterministic Qdrant point UUID for an answer (Reponse), derived from its string ID."""
+    digest = hashlib.sha256(reponse_id.encode("utf-8")).hexdigest()
+    return str(UUID(digest[:32]))
+
+
 def make_preview(text: str, max_chars: int = 240) -> str:
     """Produce a short single-line preview of *text*."""
     normalized = re.sub(r"\s+", " ", text).strip()
