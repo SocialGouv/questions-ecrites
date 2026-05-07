@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import statistics
 
@@ -18,6 +19,8 @@ from qe.office_ingestion import OFFICE_COLLECTION
 
 from api.state import _get_state
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/questions", tags=["questions"])
 
 QUESTIONS_COLLECTION = "questions_opendata"
@@ -32,6 +35,25 @@ _SIMILAR_COLLECTIONS: dict[str, tuple[str, str, str | None]] = {
     "answers": (ANSWERS_COLLECTION, "texte_reponse", None),
     "offices": (OFFICE_COLLECTION, "text", "office_id"),
 }
+
+
+def _dedup_by_key(
+    scored: list[tuple[dict, float]], dedup_key: str
+) -> list[tuple[dict, float]]:
+    """Keep the highest-scoring hit per unique value of ``dedup_key`` in payload."""
+    seen: dict[str, tuple[dict, float]] = {}
+    for candidate, score in scored:
+        key = (candidate.get("payload") or {}).get(dedup_key)
+        if key is None:
+            logger.warning(
+                "Chunk %s is missing payload field '%s'; skipping.",
+                candidate.get("id"),
+                dedup_key,
+            )
+            continue
+        if key not in seen or score > seen[key][1]:
+            seen[key] = (candidate, score)
+    return sorted(seen.values(), key=lambda x: -x[1])
 
 
 def _to_relevance(agg_score: float, pool_scores: list[float]) -> float:
@@ -224,6 +246,10 @@ def get_similar(
         )
     if not (1 <= top_k <= 50):
         raise HTTPException(status_code=422, detail="top_k must be between 1 and 50.")
+    if score_threshold is not None and not (0.0 <= score_threshold <= 1.0):
+        raise HTTPException(
+            status_code=422, detail="score_threshold must be between 0.0 and 1.0."
+        )
 
     state = _get_state()
     target_collection, text_field, dedup_key = _SIMILAR_COLLECTIONS[collection]
@@ -270,14 +296,7 @@ def get_similar(
     # For collections with multiple chunks per entity (offices), keep only the
     # best-scoring chunk per entity so each office appears at most once.
     if dedup_key is not None:
-        seen: dict[str, tuple[dict, float]] = {}
-        for candidate, score in scored:
-            key = (candidate.get("payload") or {}).get(dedup_key)
-            if key is None:
-                continue
-            if key not in seen or score > seen[key][1]:
-                seen[key] = (candidate, score)
-        scored = sorted(seen.values(), key=lambda x: -x[1])
+        scored = _dedup_by_key(scored, dedup_key)
 
     hits = [
         {
