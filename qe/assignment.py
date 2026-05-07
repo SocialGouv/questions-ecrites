@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
 from qe.clients.embedding import EmbeddingClient
 from qe.clients.qdrant import QdrantClient
 from qe.clients.rerank import RerankClient
+
+logger = logging.getLogger(__name__)
 
 
 def retrieve_candidates(
@@ -115,7 +119,12 @@ def rerank_candidates(
             if result.get("relevance_score") is not None
             else result.get("score")
         )
-        scored.append((candidates[idx], float(score or 0.0)))
+        if score is None:
+            logger.warning(
+                "Reranker returned no score for result at index %s; skipping.", idx
+            )
+            continue
+        scored.append((candidates[idx], float(score)))
 
     return sorted(scored, key=lambda x: -x[1])
 

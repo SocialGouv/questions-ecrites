@@ -20,6 +20,11 @@ class AppState:
 _state: AppState | None = None
 
 
+def set_state(state: AppState | None) -> None:
+    global _state
+    _state = state
+
+
 def _get_state() -> AppState:
     if _state is None:
         raise RuntimeError("Application has not started yet.")

@@ -124,15 +124,20 @@ def embed_answers(  # noqa: C901
 
     # Stale cleanup: scope to the same source filter so a scoped run never
     # touches points outside its remit.
-    all_db_ids = _load_all_answer_ids(source)
+    # When legislature is set, answers is a subset of all source answers, so we
+    # still need a separate query to avoid marking legislature-filtered answers
+    # as stale.
+    all_db_ids = (
+        {a.id for a in answers} if legislature is None else _load_all_answer_ids(source)
+    )
     stale_ids = [rid for rid in existing if rid not in all_db_ids]
     if stale_ids:
         logger.info("Removing %d stale point(s) (deleted from DB)...", len(stale_ids))
-        for rid in stale_ids:
-            qdrant.delete_points_by_filter(
-                collection,
-                {"must": [{"key": "reponse_id", "match": {"value": rid}}]},
-            )
+        stale_point_ids = [str(stable_answer_point_id(rid)) for rid in stale_ids]
+        qdrant.delete_points_by_filter(
+            collection,
+            {"must": [{"has_id": stale_point_ids}]},
+        )
         logger.info("  Done removing stale points.")
 
     to_embed: list[Reponse] = []

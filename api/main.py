@@ -10,9 +10,8 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-import api.state as _app_state
 from api.questions import router as questions_router
-from api.state import ALBERT_BASE_URL, ALBERT_RERANK_MODEL, AppState
+from api.state import ALBERT_BASE_URL, ALBERT_RERANK_MODEL, AppState, set_state
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from qe.clients.qdrant import QdrantClient
@@ -28,16 +27,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
 
-    _app_state._state = AppState(
-        qdrant=QdrantClient(qdrant_url),
-        reranker=RerankClient(
-            base_url=ALBERT_BASE_URL,
-            model=ALBERT_RERANK_MODEL,
-            api_key=albert_api_key,
-        ),
+    set_state(
+        AppState(
+            qdrant=QdrantClient(qdrant_url),
+            reranker=RerankClient(
+                base_url=ALBERT_BASE_URL,
+                model=ALBERT_RERANK_MODEL,
+                api_key=albert_api_key,
+            ),
+        )
     )
     yield
-    _app_state._state = None
+    set_state(None)
 
 
 app = FastAPI(
