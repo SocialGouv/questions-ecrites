@@ -4,7 +4,7 @@
 Ground truth: questions that share the same reponse_id in PostgreSQL received a
 joint parliamentary answer — they are "similar" by definition. For each such
 question we compute the exact cosine similarity to each of its siblings using
-their stored Qdrant vectors and measure what fraction of siblings score >=
+their stored vectors and measure what fraction of siblings score >=
 score_threshold.
 
 Metrics (rank-free — only the threshold matters):
@@ -13,8 +13,8 @@ Metrics (rank-free — only the threshold matters):
   - Hit@threshold:    1 if at least one sibling was found above the threshold.
 
 Implementation note: instead of issuing one ANN search per question (~11 000
-HTTP calls), this script batch-fetches all relevant vectors from Qdrant upfront
-(~11 HTTP calls) and computes cosine similarity locally with numpy. BGE-M3
+queries), this script batch-fetches all relevant vectors from pgvector upfront
+(~11 batches) and computes cosine similarity locally with numpy. BGE-M3
 vectors are unit-norm so cosine similarity equals the dot product.
 
 Output: JSON report with summary stats and ~20 failure cases that include the
@@ -38,12 +38,12 @@ from pathlib import Path
 from uuid import UUID
 
 import numpy as np
-import requests
 from sqlalchemy import func, select
 from tqdm import tqdm
 
 from qe import db
-from qe.clients.qdrant import QdrantClient
+from qe.clients.pgvector_client import PgvectorClient
+from qe.clients.vector_store import VectorStore
 from qe.models import Question
 
 logging.basicConfig(
@@ -54,13 +54,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEFAULT_COLLECTION = "questions_opendata"
-DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_SCORE_THRESHOLD = 0.8
 DEFAULT_NUM_FAILURES = 20
 DEFAULT_OUTPUT = Path("data/eval_question_similarity.json")
 # For failure-case diagnostics: how many raw (no-threshold) results to fetch
 FAILURE_TOP_K = 50
-# Batch size for fetching vectors from Qdrant
 VECTOR_FETCH_BATCH_SIZE = 1_000
 
 
@@ -70,51 +68,41 @@ VECTOR_FETCH_BATCH_SIZE = 1_000
 
 
 def _question_point_id(question_id: str) -> str:
-    """Deterministic Qdrant point UUID derived from the question's string ID."""
+    """Deterministic vector row UUID derived from the question's string ID."""
     digest = hashlib.sha256(question_id.encode("utf-8")).hexdigest()
     return str(UUID(digest[:32]))
 
 
 # ---------------------------------------------------------------------------
-# Qdrant client extended with recommend support
+# Vector store helpers
 # ---------------------------------------------------------------------------
 
 
-class _RecommendQdrantClient(QdrantClient):
-    def recommend(
-        self,
-        collection: str,
-        point_id: str,
-        top_k: int,
-        *,
-        score_threshold: float | None = None,
-        filter: dict | None = None,
-    ) -> list[dict] | None:
-        """Find neighbors of an existing point by its ID.
+def _recommend(
+    vector_store: VectorStore,
+    collection: str,
+    point_id: str,
+    top_k: int,
+    *,
+    score_threshold: float | None = None,
+    filter: dict | None = None,
+) -> list[dict] | None:
+    """Find the nearest neighbours of an existing point by fetching its vector.
 
-        Returns None if the point does not exist in the collection (not yet
-        embedded), so callers can handle missing questions gracefully.
-        """
-        payload: dict = {
-            "positive": [point_id],
-            "limit": top_k,
-            "with_payload": True,
-            "with_vectors": False,
-        }
-        if score_threshold is not None:
-            payload["score_threshold"] = score_threshold
-        if filter is not None:
-            payload["filter"] = filter
-
-        response = requests.post(
-            f"{self.base_url}/collections/{collection}/points/recommend",
-            json=payload,
-            timeout=60,
-        )
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        return response.json().get("result", [])
+    Returns None if the point is absent (not yet embedded), so callers can
+    handle missing questions gracefully.  Functionally equivalent to a
+    single-positive-example recommendation query.
+    """
+    point = vector_store.get_point(collection, point_id, with_vectors=True)
+    if point is None:
+        return None
+    return vector_store.search(
+        collection,
+        point["vector"],
+        top_k,
+        filter=filter,
+        score_threshold=score_threshold,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -123,15 +111,15 @@ class _RecommendQdrantClient(QdrantClient):
 
 
 def _fetch_all_vectors(
-    qdrant: _RecommendQdrantClient,
+    vector_store: VectorStore,
     collection: str,
     question_ids: list[str],
     batch_size: int = VECTOR_FETCH_BATCH_SIZE,
 ) -> dict[str, np.ndarray]:
-    """Batch-fetch vectors for all given question IDs from Qdrant.
+    """Batch-fetch vectors for all given question IDs from the vector store.
 
     Returns a dict mapping question_id → unit-norm vector. Questions not found
-    in Qdrant (not yet embedded) are simply absent from the result.
+    in the vector store (not yet embedded) are simply absent from the result.
     """
     point_id_to_question_id = {_question_point_id(qid): qid for qid in question_ids}
     point_ids = list(point_id_to_question_id.keys())
@@ -143,7 +131,7 @@ def _fetch_all_vectors(
         unit="batch",
     ):
         batch = point_ids[i : i + batch_size]
-        points = qdrant.get_points_by_ids(collection, batch, with_vectors=True)
+        points = vector_store.get_points_by_ids(collection, batch, with_vectors=True)
         for point in points:
             pid = point.get("id")
             vec = point.get("vector")
@@ -204,7 +192,6 @@ def main() -> None:  # noqa: C901
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--collection", default=DEFAULT_COLLECTION)
-    parser.add_argument("--qdrant-url", default=DEFAULT_QDRANT_URL)
     parser.add_argument(
         "--score-threshold",
         type=float,
@@ -220,7 +207,7 @@ def main() -> None:  # noqa: C901
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
 
-    qdrant = _RecommendQdrantClient(args.qdrant_url)
+    vector_store = PgvectorClient()
 
     # ------------------------------------------------------------------
     # 1. Load ground truth from PostgreSQL
@@ -230,11 +217,11 @@ def main() -> None:  # noqa: C901
     logger.info("  Found %d groups with >= 2 questions.", len(all_groups))
 
     # ------------------------------------------------------------------
-    # 2. Batch-fetch all relevant vectors from Qdrant (once)
+    # 2. Batch-fetch all relevant vectors from pgvector (once)
     # ------------------------------------------------------------------
     all_question_ids = list({qid for _, qids in all_groups for qid in qids})
     logger.info("  Fetching vectors for %d questions...", len(all_question_ids))
-    vectors = _fetch_all_vectors(qdrant, args.collection, all_question_ids)
+    vectors = _fetch_all_vectors(vector_store, args.collection, all_question_ids)
     logger.info(
         "  Got vectors for %d / %d questions.", len(vectors), len(all_question_ids)
     )
@@ -281,7 +268,7 @@ def main() -> None:  # noqa: C901
 
     if not_embedded:
         logger.warning(
-            "%d question(s) were not found in Qdrant and were skipped.",
+            "%d question(s) were not found in the vector store and were skipped.",
             len(not_embedded),
         )
 
@@ -351,7 +338,8 @@ def main() -> None:  # noqa: C901
 
         # Top-5 results (no threshold) for context on what the model did find
         raw_hits = (
-            qdrant.recommend(args.collection, point_id, top_k=FAILURE_TOP_K) or []
+            _recommend(vector_store, args.collection, point_id, top_k=FAILURE_TOP_K)
+            or []
         )
 
         query_meta = metadata.get(query_id, {})

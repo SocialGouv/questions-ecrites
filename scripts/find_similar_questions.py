@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-r"""Find questions similar to a given input from the Qdrant questions collection.
+r"""Find questions similar to a given input from the pgvector questions table.
 
-Embeds the query and searches the Qdrant collection populated by
+Embeds the query and searches the pgvector table populated by
 embed_questions.py (DB-sourced) or ingest_questions.py (file-sourced).
 Results above the similarity threshold are returned, sorted by cosine
 similarity (descending).
@@ -28,7 +28,7 @@ Usage:
 Requires:
   - SOCLE_IA_API_KEY environment variable set
   - LLM_BASE_URL (or EMBEDDINGS_URL) environment variable set
-  - A populated Qdrant collection (run embed_questions.py first)
+  - A populated pgvector table (run embed_questions.py first)
 """
 
 from __future__ import annotations
@@ -41,13 +41,13 @@ from pathlib import Path
 
 from qe import db
 from qe.clients.embedding import EmbeddingClient
-from qe.clients.qdrant import QdrantClient
+from qe.clients.pgvector_client import PgvectorClient
+from qe.clients.vector_store import VectorStore
 from qe.config import get_settings, require_api_key
 from qe.documents import read_document
 from qe.models import Question
 
 DEFAULT_COLLECTION = "questions_opendata"
-DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_TOP_K = 10
 DEFAULT_THRESHOLD = 0.75
 
@@ -56,7 +56,6 @@ DEFAULT_THRESHOLD = 0.75
 class SearchConfig:
     question_text: str
     collection: str
-    qdrant_url: str
     embedding_model: str
     embeddings_url: str
     api_key: str
@@ -100,12 +99,7 @@ def parse_args() -> SearchConfig:
     parser.add_argument(
         "--collection",
         default=DEFAULT_COLLECTION,
-        help=f"Qdrant collection name (default: {DEFAULT_COLLECTION}).",
-    )
-    parser.add_argument(
-        "--qdrant-url",
-        default=DEFAULT_QDRANT_URL,
-        help="Base URL for Qdrant (e.g. http://localhost:6333).",
+        help=f"Collection name (default: {DEFAULT_COLLECTION}).",
     )
     parser.add_argument(
         "--embedding-model",
@@ -163,7 +157,6 @@ def parse_args() -> SearchConfig:
     return SearchConfig(
         question_text=question_text,
         collection=args.collection,
-        qdrant_url=args.qdrant_url,
         embedding_model=args.embedding_model or settings.embedding_model,
         embeddings_url=settings.embeddings_url,
         api_key=api_key,
@@ -178,7 +171,7 @@ def find_similar(
     question_text: str,
     collection: str,
     embedder: EmbeddingClient,
-    qdrant: QdrantClient,
+    vector_store: VectorStore,
     top_k: int,
     threshold: float,
     filter_status: str | None = None,
@@ -187,10 +180,10 @@ def find_similar(
 
     Args:
         question_text: Raw text of the query question.
-        collection: Qdrant collection to search.
+        collection: Collection name to search.
         embedder: Client for generating dense embeddings.
-        qdrant: Qdrant REST client.
-        top_k: Number of nearest neighbours to retrieve from Qdrant.
+        vector_store: Vector store client.
+        top_k: Number of nearest neighbours to retrieve.
         threshold: Minimum cosine similarity to include in output.
         filter_status: If set, restrict results to this etat_question value.
 
@@ -199,13 +192,13 @@ def find_similar(
     """
     vector = embedder.embed(question_text)
 
-    qdrant_filter = None
+    search_filter = None
     if filter_status:
-        qdrant_filter = {
+        search_filter = {
             "must": [{"key": "etat_question", "match": {"value": filter_status}}]
         }
 
-    candidates = qdrant.search(collection, vector, top_k, filter=qdrant_filter)
+    candidates = vector_store.search(collection, vector, top_k, filter=search_filter)
 
     results = []
     for candidate in candidates:
@@ -240,13 +233,13 @@ def main() -> None:
         model=config.embedding_model,
         api_key=config.api_key,
     )
-    qdrant = QdrantClient(config.qdrant_url)
+    vector_store = PgvectorClient()
 
     results = find_similar(
         question_text=config.question_text,
         collection=config.collection,
         embedder=embedder,
-        qdrant=qdrant,
+        vector_store=vector_store,
         top_k=config.top_k,
         threshold=config.threshold,
         filter_status=config.filter_status,

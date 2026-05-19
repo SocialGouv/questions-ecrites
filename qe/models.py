@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
     JSON,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     Text,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -291,3 +293,37 @@ class QuestionCluster(Base):
     )
     cluster_id: Mapped[int] = mapped_column(Integer, nullable=False)
     similarity_to_centroid: Mapped[float] = mapped_column(nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Vector store tables (pgvector — replaces Qdrant collections)
+# ---------------------------------------------------------------------------
+
+# Expected vector dimension for BAAI/bge-m3 (the default embedding model).
+# Change this constant if you switch to a different model, then create a new
+# Alembic migration to alter the column type.
+_VECTOR_DIM = 1024
+
+
+class OfficeResponsibilitiesVec(Base):
+    __tablename__ = "vec_office_responsibilities"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    vector: Mapped[list] = mapped_column(Vector(_VECTOR_DIM), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+
+
+class QuestionsOpendataVec(Base):
+    __tablename__ = "vec_questions_opendata"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    vector: Mapped[list] = mapped_column(Vector(_VECTOR_DIM), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+
+
+class AnswersOpendataVec(Base):
+    __tablename__ = "vec_answers_opendata"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    vector: Mapped[list] = mapped_column(Vector(_VECTOR_DIM), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")

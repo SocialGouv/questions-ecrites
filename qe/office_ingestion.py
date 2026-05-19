@@ -1,4 +1,4 @@
-"""Ingestion logic for office responsibility XLSX files into Qdrant."""
+"""Ingestion logic for office responsibility XLSX files into pgvector."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import openpyxl
 from qe import db
 from qe.chunking import Chunk
 from qe.clients.embedding import EmbeddingClient
-from qe.clients.qdrant import QdrantClient
+from qe.clients.vector_store import VectorStore
 from qe.hashing import compute_content_hash, make_preview, stable_chunk_id
 
 OFFICE_COLLECTION = "office_responsibilities"
@@ -119,9 +119,9 @@ def ingest_office_xlsx(
     xlsx_path: Path,
     collection: str,
     embedder: EmbeddingClient,
-    qdrant: QdrantClient,
+    vector_store: VectorStore,
 ) -> None:
-    """Ingest one office responsibilities XLSX file into a Qdrant collection.
+    """Ingest one office responsibilities XLSX file into the vector store.
 
     Incremental: skips the file if its content hash is unchanged in the
     manifest.  On change, deletes all existing points for this file before
@@ -129,9 +129,9 @@ def ingest_office_xlsx(
 
     Args:
         xlsx_path: Path to the XLSX file.
-        collection: Qdrant collection name.
+        collection: Collection name.
         embedder: Client for generating dense embeddings.
-        qdrant: Qdrant REST client.
+        vector_store: Vector store client.
     """
     raw_bytes = xlsx_path.read_bytes()
     document_hash = compute_content_hash(raw_bytes.hex())
@@ -148,21 +148,21 @@ def ingest_office_xlsx(
         print(f"No office rows found in {xlsx_path}; skipping.")
         return
 
-    collection_exists = qdrant.collection_exists(collection)
+    collection_exists = vector_store.collection_exists(collection)
 
     # Delete stale points for this file before re-ingesting.
     if collection_exists:
         filter_payload = {
             "must": [{"key": "source_file", "match": {"value": path_key}}]
         }
-        qdrant.delete_points_by_filter(collection, filter_payload)
+        vector_store.delete_points_by_filter(collection, filter_payload)
 
     triples = _office_rows_to_chunks(rows)
 
     if not collection_exists:
         # Size the collection from the first chunk embedding.
         first_embedding = embedder.embed(triples[0][2].text)
-        qdrant.create_collection(collection, vector_size=len(first_embedding))
+        vector_store.create_collection(collection, vector_size=len(first_embedding))
         print(f"Created collection '{collection}' with size {len(first_embedding)}.")
 
     points: list[dict] = []
@@ -172,6 +172,6 @@ def ingest_office_xlsx(
         payload = _build_office_chunk_payload(xlsx_path, row, chunk, document_hash)
         points.append({"id": point_id, "vector": embedding, "payload": payload})
 
-    qdrant.upsert_points(collection, points)
+    vector_store.upsert_points(collection, points)
     db.upsert_manifest(path_key, document_hash)
     print(f"Upserted {len(points)} chunks for '{xlsx_path.name}' into '{collection}'.")

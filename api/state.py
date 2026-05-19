@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from qe.clients.qdrant import QdrantClient
 from qe.clients.rerank import RerankClient
+from qe.clients.vector_store import VectorStore
 
 ALBERT_BASE_URL = "https://albert.api.etalab.gouv.fr"
 ALBERT_RERANK_MODEL = "openweight-rerank"
@@ -13,7 +13,7 @@ ALBERT_RERANK_MODEL = "openweight-rerank"
 
 @dataclass
 class AppState:
-    qdrant: QdrantClient
+    vector_store: VectorStore
     reranker: RerankClient
 
 

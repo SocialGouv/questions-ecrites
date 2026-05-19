@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Embed parliamentary questions from PostgreSQL into a Qdrant collection.
+"""Embed parliamentary questions from PostgreSQL into pgvector.
 
 Reads questions from the `questions` table (populated by ingest_an_legacy.py or ingest_senat.py),
 generates embeddings using ``texte_question``, and upserts the result into
-Qdrant.
+the `vec_questions_opendata` pgvector table.
 
-Incremental: questions are skipped if they are already in Qdrant with the same
+Incremental: questions are skipped if they are already embedded with the same
 embedding model and the same texte_question content (tracked via a SHA-256 hash
 stored in the point payload alongside ``embedding_model``).  If the model
 changes, all questions are re-embedded.
 
-Questions deleted from PostgreSQL are cleaned up from Qdrant automatically.
+Questions deleted from PostgreSQL are cleaned up from the vector table automatically.
 
 Filters (all combinable):
     --filter-status   EN_COURS | REPONDU | …   question status
@@ -35,7 +35,6 @@ Requires:
     - SOCLE_IA_API_KEY environment variable set
     - LLM_BASE_URL (or EMBEDDINGS_URL) environment variable set
     - A running PostgreSQL with ingested questions (run ingest_an_legacy.py / ingest_senat.py first)
-    - A running Qdrant instance
 """
 
 from __future__ import annotations
@@ -53,7 +52,8 @@ from tqdm import tqdm
 
 from qe import db
 from qe.clients.embedding import EmbeddingClient
-from qe.clients.qdrant import QdrantClient
+from qe.clients.pgvector_client import PgvectorClient
+from qe.clients.vector_store import VectorStore
 from qe.config import get_settings, require_api_key
 from qe.hashing import make_preview
 from qe.models import Question
@@ -67,14 +67,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEFAULT_COLLECTION = "questions_opendata"
-DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_BATCH_SIZE = 32
 
 
 @dataclass(frozen=True)
 class EmbedConfig:
     collection: str
-    qdrant_url: str
     embedding_model: str
     embeddings_url: str
     api_key: str
@@ -90,18 +88,13 @@ class EmbedConfig:
 
 def _parse_args() -> EmbedConfig:
     parser = argparse.ArgumentParser(
-        description="Embed questions from PostgreSQL into Qdrant.",
+        description="Embed questions from PostgreSQL into pgvector.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--collection",
         default=DEFAULT_COLLECTION,
-        help=f"Qdrant collection name (default: {DEFAULT_COLLECTION}).",
-    )
-    parser.add_argument(
-        "--qdrant-url",
-        default=DEFAULT_QDRANT_URL,
-        help="Base URL for Qdrant (default: http://localhost:6333).",
+        help=f"Collection name (default: {DEFAULT_COLLECTION}).",
     )
     parser.add_argument(
         "--embedding-model",
@@ -177,7 +170,6 @@ def _parse_args() -> EmbedConfig:
 
     return EmbedConfig(
         collection=args.collection,
-        qdrant_url=args.qdrant_url,
         embedding_model=args.embedding_model or settings.embedding_model,
         embeddings_url=settings.embeddings_url,
         api_key=api_key,
@@ -242,13 +234,13 @@ def _load_all_question_ids() -> set[str]:
 
 
 def _load_existing_points(
-    qdrant: QdrantClient, collection: str
+    vector_store: VectorStore, collection: str
 ) -> dict[str, tuple[str, str]]:
     """Scroll all existing points (no vectors) and return {question_id: (model, content_hash)}."""
-    if not qdrant.collection_exists(collection):
+    if not vector_store.collection_exists(collection):
         return {}
-    logger.info("Loading existing points from Qdrant collection '%s'...", collection)
-    points = qdrant.scroll_all(collection, with_vectors=False)
+    logger.info("Loading existing points from collection '%s'...", collection)
+    points = vector_store.scroll_all(collection, with_vectors=False)
     result: dict[str, tuple[str, str]] = {}
     for point in points:
         payload = point.get("payload", {})
@@ -275,7 +267,7 @@ def embed_questions(  # noqa: C901
     *,
     collection: str,
     embedder: EmbeddingClient,
-    qdrant: QdrantClient,
+    vector_store: VectorStore,
     embedding_model: str,
     filter_status: str | None,
     ministry: str | None = None,
@@ -286,16 +278,16 @@ def embed_questions(  # noqa: C901
     batch_size: int = DEFAULT_BATCH_SIZE,
     rate_limiter: TokenBucketRateLimiter | None = None,
 ) -> None:
-    """Embed all matching questions from PostgreSQL into Qdrant.
+    """Embed all matching questions from PostgreSQL into pgvector.
 
-    Skips questions already in Qdrant with the same embedding model and content
+    Skips questions already embedded with the same embedding model and content
     hash.  Re-embeds if the model or the question text has changed.  Cleans up
-    Qdrant points for questions no longer in the database.
+    rows for questions no longer in the database.
 
     Args:
-        collection: Qdrant collection name.
+        collection: Vector table collection name.
         embedder: Embedding API client.
-        qdrant: Qdrant REST client.
+        vector_store: Vector store client.
         embedding_model: Model name stored in each point payload.
         filter_status: If set, only embed questions with this etat_question.
         ministry: Substring filter on ministre_attributaire_libelle.
@@ -321,8 +313,7 @@ def embed_questions(  # noqa: C901
 
     logger.info("Loaded %d question(s) from PostgreSQL.", len(questions))
 
-    # Load existing Qdrant points (no vectors) to determine what to skip/clean.
-    existing = _load_existing_points(qdrant, collection)
+    existing = _load_existing_points(vector_store, collection)
 
     # --- Stale point cleanup ---
     # Use all DB IDs (unfiltered) so questions outside the current filter scope
@@ -332,7 +323,7 @@ def embed_questions(  # noqa: C901
     if stale_ids:
         logger.info("Removing %d stale point(s) (deleted from DB)...", len(stale_ids))
         for qid in stale_ids:
-            qdrant.delete_points_by_filter(
+            vector_store.delete_points_by_filter(
                 collection,
                 {"must": [{"key": "question_id", "match": {"value": qid}}]},
             )
@@ -380,8 +371,8 @@ def embed_questions(  # noqa: C901
     first_embeddings = embedder.embed_batch(first_batch_texts)
     vector_size = len(first_embeddings[0])
 
-    if not qdrant.collection_exists(collection):
-        qdrant.create_collection(collection, vector_size=vector_size)
+    if not vector_store.collection_exists(collection):
+        vector_store.create_collection(collection, vector_size=vector_size)
         logger.info("Created collection '%s' (dim=%d).", collection, vector_size)
 
     # --- Batch embed + upsert with progress bar ---
@@ -429,7 +420,7 @@ def embed_questions(  # noqa: C901
                     }
                 )
 
-            qdrant.upsert_points(collection, points)
+            vector_store.upsert_points(collection, points)
             upserted += len(batch)
             progress.update(len(batch))
 
@@ -449,7 +440,7 @@ def main() -> None:
         model=config.embedding_model,
         api_key=config.api_key,
     )
-    qdrant = QdrantClient(config.qdrant_url)
+    vector_store = PgvectorClient()
     rate_limiter = (
         TokenBucketRateLimiter(rate_per_minute=config.rate_limit)
         if config.rate_limit
@@ -462,7 +453,7 @@ def main() -> None:
     embed_questions(
         collection=config.collection,
         embedder=embedder,
-        qdrant=qdrant,
+        vector_store=vector_store,
         embedding_model=config.embedding_model,
         filter_status=config.filter_status,
         ministry=config.ministry,

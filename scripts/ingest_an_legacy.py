@@ -2,7 +2,7 @@
 """Ingest AN legacy question ZIP archives (XIV and XV legislatures).
 
 Processes the ZIP archives downloaded by download_an_legacy.py and upserts
-questions into PostgreSQL, then embeds newly ingested answers into Qdrant.
+questions into PostgreSQL, then embeds newly ingested answers into pgvector.
 
 Usage:
     poetry run python scripts/ingest_an_legacy.py --dir data/an_archives/
@@ -88,7 +88,7 @@ def main() -> None:
     parser.add_argument(
         "--skip-embed",
         action="store_true",
-        help="Skip embedding answers into Qdrant after ingest",
+        help="Skip embedding answers into pgvector after ingest",
     )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()

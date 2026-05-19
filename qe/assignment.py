@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 
 from qe.clients.embedding import EmbeddingClient
-from qe.clients.qdrant import QdrantClient
 from qe.clients.rerank import RerankClient
+from qe.clients.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +16,13 @@ def retrieve_candidates(
     query_units: list[str] | None = None,
     precomputed_vectors: list[list[float]] | None = None,
     embedder: EmbeddingClient | None = None,
-    qdrant: QdrantClient,
+    vector_store: VectorStore,
     collection: str,
     top_k: int,
     query_filter: dict | None = None,
     score_threshold: float | None = None,
 ) -> list[dict]:
-    """Search Qdrant and return deduplicated candidates.
+    """Search the vector store and return deduplicated candidates.
 
     Accepts either raw query texts (which are embedded on the fly) or
     pre-computed vectors (which bypass the embedding step entirely).  The two
@@ -37,19 +37,19 @@ def retrieve_candidates(
             ``embedder`` to be provided when non-empty.
         precomputed_vectors: Dense vectors to use directly for search, skipping
             the embedding step.  Useful when the question is already embedded
-            in Qdrant (e.g. ``questions_opendata`` collection).
+            in the vector store (e.g. ``questions_opendata`` collection).
         embedder: Client for generating dense embeddings.  Required when
             ``query_units`` is provided; may be ``None`` otherwise.
-        qdrant: Qdrant REST client.
-        collection: Name of the Qdrant collection to search.
+        vector_store: Vector store client.
+        collection: Name of the collection to search.
         top_k: Number of nearest neighbours to retrieve per vector.
-        query_filter: Optional Qdrant filter dict to restrict the search
+        query_filter: Optional filter dict to restrict the search
             (e.g. filter by ``chunk_type``).
         score_threshold: Optional minimum cosine similarity score (0.0–1.0).
             Candidates below this threshold are dropped before reranking.
 
     Returns:
-        Deduplicated list of Qdrant candidate dicts, each with ``"id"``,
+        Deduplicated list of candidate dicts, each with ``"id"``,
         ``"score"``, and ``"payload"`` keys.
 
     Raises:
@@ -70,7 +70,7 @@ def retrieve_candidates(
 
     seen_ids: dict[str, dict] = {}
     for vector in vectors:
-        candidates = qdrant.search(
+        candidates = vector_store.search(
             collection,
             vector,
             top_k,
@@ -93,7 +93,7 @@ def rerank_candidates(
     """Rerank candidates by relevance and return (candidate, score) pairs.
 
     Args:
-        candidates: Qdrant candidate dicts with ``"id"``, ``"score"``,
+        candidates: Candidate dicts with ``"id"``, ``"score"``,
             ``"payload"`` keys.
         reranker: Albert rerank client.
         query: The rerank query (full question text).
@@ -142,7 +142,7 @@ def build_matches(
     duty sub-topic.
 
     Args:
-        candidates: Deduplicated Qdrant candidates from :func:`retrieve_candidates`.
+        candidates: Deduplicated candidates from :func:`retrieve_candidates`.
         reranker: Albert rerank client.
         query: The rerank query — should be the full question text.
 
@@ -228,7 +228,7 @@ def match_question_to_offices(
     question: str,
     *,
     embedder: EmbeddingClient,
-    qdrant: QdrantClient,
+    vector_store: VectorStore,
     reranker: RerankClient,
     collection: str,
     top_k: int,
@@ -245,7 +245,7 @@ def match_question_to_offices(
     candidates = retrieve_candidates(
         query_units=[question],
         embedder=embedder,
-        qdrant=qdrant,
+        vector_store=vector_store,
         collection=collection,
         top_k=top_k,
         query_filter=query_filter,

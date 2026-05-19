@@ -14,7 +14,7 @@ from api.questions import router as questions_router
 from api.state import ALBERT_BASE_URL, ALBERT_RERANK_MODEL, AppState, set_state
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from qe.clients.qdrant import QdrantClient
+from qe.clients.pgvector_client import PgvectorClient
 from qe.clients.rerank import RerankClient
 
 
@@ -25,11 +25,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not albert_api_key:
         raise RuntimeError("ALBERT_API_KEY environment variable is not set.")
 
-    qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
-
     set_state(
         AppState(
-            qdrant=QdrantClient(qdrant_url),
+            vector_store=PgvectorClient(),
             reranker=RerankClient(
                 base_url=ALBERT_BASE_URL,
                 model=ALBERT_RERANK_MODEL,

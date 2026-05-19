@@ -1,16 +1,15 @@
-"""Embed parliamentary answers (Reponse) from PostgreSQL into a Qdrant collection.
+"""Embed parliamentary answers (Reponse) from PostgreSQL into pgvector.
 
-Incremental: answers are skipped if they are already in Qdrant with the same
+Incremental: answers are skipped if they are already embedded with the same
 embedding model and the same texte_reponse content (tracked via a SHA-256 hash
 stored in the point payload alongside ``embedding_model``).
 
-Answers deleted from PostgreSQL are cleaned up from Qdrant automatically.
+Answers deleted from PostgreSQL are cleaned up from the vector table automatically.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from itertools import batched
 
@@ -20,7 +19,7 @@ from tqdm import tqdm
 
 from qe import db
 from qe.clients.embedding import EmbeddingClient
-from qe.clients.qdrant import QdrantClient
+from qe.clients.vector_store import VectorStore
 from qe.hashing import compute_content_hash, make_preview, stable_answer_point_id
 from qe.models import Question, Reponse
 from qe.rate_limiter import TokenBucketRateLimiter
@@ -64,16 +63,16 @@ def _load_all_answer_ids(source: str | None) -> set[str]:
 
 
 def _load_existing_points(
-    qdrant: QdrantClient, collection: str, source: str | None
+    vector_store: VectorStore, collection: str, source: str | None
 ) -> dict[str, tuple[str, str]]:
     """Scroll existing points matching the active source filter; return {reponse_id: (model, hash)}."""
-    if not qdrant.collection_exists(collection):
+    if not vector_store.collection_exists(collection):
         return {}
-    logger.info("Loading existing points from Qdrant collection '%s'...", collection)
+    logger.info("Loading existing points from collection '%s'...", collection)
     filter_ = (
         {"must": [{"key": "source", "match": {"value": source}}]} if source else None
     )
-    points = qdrant.scroll_all(collection, filter=filter_, with_vectors=False)
+    points = vector_store.scroll_all(collection, filter=filter_, with_vectors=False)
     result: dict[str, tuple[str, str]] = {}
     for point in points:
         payload = point.get("payload", {})
@@ -89,7 +88,7 @@ def _load_existing_points(
 def embed_answers(  # noqa: C901
     *,
     embedder: EmbeddingClient,
-    qdrant: QdrantClient,
+    vector_store: VectorStore,
     embedding_model: str,
     collection: str = DEFAULT_COLLECTION,
     source: str | None = None,
@@ -97,16 +96,16 @@ def embed_answers(  # noqa: C901
     batch_size: int = DEFAULT_BATCH_SIZE,
     rate_limiter: TokenBucketRateLimiter | None = None,
 ) -> EmbedStats:
-    """Embed all answers from PostgreSQL into Qdrant.
+    """Embed all answers from PostgreSQL into pgvector.
 
-    Skips answers already in Qdrant with the same embedding model and content
-    hash. Cleans up Qdrant points for answers no longer in the database.
+    Skips answers already embedded with the same embedding model and content
+    hash. Cleans up rows for answers no longer in the database.
 
     Args:
         embedder: Embedding API client.
-        qdrant: Qdrant REST client.
+        vector_store: Vector store client.
         embedding_model: Model name stored in each point payload.
-        collection: Qdrant collection name.
+        collection: Vector table collection name.
         source: If set, restrict to "AN" or "SENAT".
         batch_size: Number of answers per embedding API call.
         rate_limiter: Optional global rate limiter (API calls/min).
@@ -120,7 +119,7 @@ def embed_answers(  # noqa: C901
 
     logger.info("Loaded %d answer(s) from PostgreSQL.", len(answers))
 
-    existing = _load_existing_points(qdrant, collection, source)
+    existing = _load_existing_points(vector_store, collection, source)
 
     # Stale cleanup: scope to the same source filter so a scoped run never
     # touches points outside its remit.
@@ -134,7 +133,7 @@ def embed_answers(  # noqa: C901
     if stale_ids:
         logger.info("Removing %d stale point(s) (deleted from DB)...", len(stale_ids))
         stale_point_ids = [str(stable_answer_point_id(rid)) for rid in stale_ids]
-        qdrant.delete_points_by_filter(
+        vector_store.delete_points_by_filter(
             collection,
             {"must": [{"has_id": stale_point_ids}]},
         )
@@ -183,9 +182,9 @@ def embed_answers(  # noqa: C901
     first_embeddings = embedder.embed_batch(first_batch_texts)
     vector_size = len(first_embeddings[0])
 
-    existing_dim = qdrant.get_vector_size(collection)
+    existing_dim = vector_store.get_vector_size(collection)
     if existing_dim is None:
-        qdrant.create_collection(collection, vector_size=vector_size)
+        vector_store.create_collection(collection, vector_size=vector_size)
         logger.info("Created collection '%s' (dim=%d).", collection, vector_size)
     elif existing_dim != vector_size:
         raise ValueError(
@@ -236,7 +235,7 @@ def embed_answers(  # noqa: C901
                     }
                 )
 
-            qdrant.upsert_points(collection, points)
+            vector_store.upsert_points(collection, points)
             upserted += len(batch)
             progress.update(len(batch))
 
@@ -252,13 +251,13 @@ def embed_answers(  # noqa: C901
 
 
 def try_embed_answers_from_env(source: str) -> EmbedStats | None:
-    """Embed answers into Qdrant using env-configured clients.
+    """Embed answers into pgvector using env-configured clients.
 
     Intended for use at the end of ingest scripts. Logs a warning and returns
     without raising if the required env vars are not set or if embedding fails.
     """
     from qe.clients.embedding import EmbeddingClient
-    from qe.clients.qdrant import QdrantClient
+    from qe.clients.pgvector_client import PgvectorClient
     from qe.config import get_settings
 
     try:
@@ -271,18 +270,17 @@ def try_embed_answers_from_env(source: str) -> EmbedStats | None:
         )
         return None
 
-    qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
     embedder = EmbeddingClient(
         url=settings.embeddings_url,
         model=settings.embedding_model,
         api_key=settings.socle_api_key,
     )
-    qdrant = QdrantClient(qdrant_url)
+    vector_store = PgvectorClient()
 
     try:
         stats = embed_answers(
             embedder=embedder,
-            qdrant=qdrant,
+            vector_store=vector_store,
             embedding_model=settings.embedding_model,
             source=source,
         )

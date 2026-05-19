@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Reset a Qdrant collection and the corresponding ingest manifest."""
+"""Reset a pgvector collection and the corresponding ingest manifest."""
 
 from __future__ import annotations
 
@@ -8,27 +8,21 @@ import sys
 from pathlib import Path
 
 from qe import db
-from qe.clients.qdrant import QdrantClient
+from qe.clients.pgvector_client import PgvectorClient
 
 DEFAULT_INPUT_DIR = Path("data/office_responsibilities")
 DEFAULT_COLLECTION = "office_responsibilities"
-DEFAULT_QDRANT_URL = "http://localhost:6333"
 MANIFEST_FILENAME = ".ingest_manifest.json"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Delete a Qdrant collection and the corresponding ingest manifest."
+        description="Delete a vector store collection and the corresponding ingest manifest."
     )
     parser.add_argument(
         "--collection",
         default=DEFAULT_COLLECTION,
-        help="Qdrant collection name to delete.",
-    )
-    parser.add_argument(
-        "--qdrant-url",
-        default=DEFAULT_QDRANT_URL,
-        help="Base URL for Qdrant (e.g. http://localhost:6333).",
+        help="Collection name to clear.",
     )
     parser.add_argument(
         "--input-dir",
@@ -109,17 +103,14 @@ def _clear_postgres_state(input_dir: Path) -> None:
 
 def main() -> int:
     args = parse_args()
-    qdrant = QdrantClient(args.qdrant_url)
+    vector_store = PgvectorClient()
 
     try:
-        deleted = qdrant.delete_collection(args.collection)
+        deleted = vector_store.delete_collection(args.collection)
         if deleted:
-            print(
-                f"Deleted collection '{args.collection}'"
-                f" from Qdrant at {args.qdrant_url}."
-            )
+            print(f"Cleared collection '{args.collection}' (all rows deleted).")
         else:
-            print(f"Collection '{args.collection}' was already absent in Qdrant.")
+            print(f"Collection '{args.collection}' was already empty.")
     except Exception as exc:  # noqa: BLE001
         print(f"Failed to delete collection: {exc}", file=sys.stderr)
         return 1

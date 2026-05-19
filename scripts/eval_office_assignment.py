@@ -11,13 +11,12 @@ from tqdm import tqdm
 
 from qe.assignment import match_question_to_offices
 from qe.clients.embedding import EmbeddingClient
-from qe.clients.qdrant import QdrantClient
+from qe.clients.pgvector_client import PgvectorClient
 from qe.clients.rerank import RerankClient
 from qe.config import get_settings
 from qe.office_ingestion import OFFICE_COLLECTION
 
 DEFAULT_INPUT = Path("data/qe_attributions_DGCS.xlsx")
-DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_ALBERT_BASE_URL = "https://albert.api.etalab.gouv.fr"
 DEFAULT_ALBERT_MODEL = "openweight-rerank"
 DEFAULT_TOP_K = 20
@@ -38,7 +37,7 @@ def parse_args() -> argparse.Namespace:
         "--top-k",
         type=int,
         default=DEFAULT_TOP_K,
-        help=f"Qdrant candidates to retrieve per question (default: {DEFAULT_TOP_K}).",
+        help=f"Candidates to retrieve per question (default: {DEFAULT_TOP_K}).",
     )
     parser.add_argument(
         "--top-offices",
@@ -49,12 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--collection",
         default=OFFICE_COLLECTION,
-        help=f"Qdrant collection to search (default: {OFFICE_COLLECTION}).",
-    )
-    parser.add_argument(
-        "--qdrant-url",
-        default=DEFAULT_QDRANT_URL,
-        help=f"Qdrant base URL (default: {DEFAULT_QDRANT_URL}).",
+        help=f"Collection to search (default: {OFFICE_COLLECTION}).",
     )
     parser.add_argument(
         "--chunks",
@@ -103,7 +97,7 @@ def main() -> int:  # noqa: C901
         api_key=settings.socle_api_key,
         model=settings.embedding_model,
     )
-    qdrant = QdrantClient(args.qdrant_url)
+    vector_store = PgvectorClient()
     reranker = RerankClient(
         base_url=DEFAULT_ALBERT_BASE_URL,
         model=DEFAULT_ALBERT_MODEL,
@@ -117,7 +111,7 @@ def main() -> int:  # noqa: C901
         kept_matches, score_by_office = match_question_to_offices(
             question_text,
             embedder=embedder,
-            qdrant=qdrant,
+            vector_store=vector_store,
             reranker=reranker,
             collection=args.collection,
             top_k=args.top_k,

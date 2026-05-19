@@ -27,10 +27,10 @@ def stable_chunk_id(path: Path, section_index: int, chunk_index: int) -> str:
 
 
 def stable_question_point_id(question_id: str) -> str:
-    """Deterministic Qdrant point UUID for a question, derived from its string ID.
+    """Deterministic vector row UUID for a question, derived from its string ID.
 
     Mirrors the ``_question_point_id`` logic used in ``scripts/embed_questions.py``
-    so that any code needing to look up a question point can share a single
+    so that any code needing to look up a question vector can share a single
     implementation.
     """
     digest = hashlib.sha256(question_id.encode("utf-8")).hexdigest()
@@ -38,7 +38,7 @@ def stable_question_point_id(question_id: str) -> str:
 
 
 def stable_answer_point_id(reponse_id: str) -> str:
-    """Deterministic Qdrant point UUID for an answer (Reponse), derived from its string ID."""
+    """Deterministic vector row UUID for an answer (Reponse), derived from its string ID."""
     digest = hashlib.sha256(reponse_id.encode("utf-8")).hexdigest()
     return str(UUID(digest[:32]))
 

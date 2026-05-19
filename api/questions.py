@@ -28,7 +28,7 @@ ANSWERS_COLLECTION = "answers_opendata"
 
 # Allowlisted collections for the /similar endpoint.
 # Maps the public name to (internal_collection, text_field, dedup_key).
-# dedup_key=None means one Qdrant point per entity (no deduplication needed).
+# dedup_key=None means one point per entity (no deduplication needed).
 # dedup_key="office_id" means keep only the best-scoring chunk per office.
 _SIMILAR_COLLECTIONS: dict[str, tuple[str, str, str | None]] = {
     "questions": (QUESTIONS_COLLECTION, "texte_question", None),
@@ -117,7 +117,7 @@ def get_attributions(question_id: str, top_k: int = 3) -> dict:
         ``office_name``, ``direction``, ``score``, and ``relevance``.
 
     Raises:
-        404: Question point not found in Qdrant (not yet embedded).
+        404: Question point not found in the vector store (not yet embedded).
         422: ``top_k`` is less than 1.
     """
     if top_k < 1:
@@ -125,13 +125,15 @@ def get_attributions(question_id: str, top_k: int = 3) -> dict:
 
     state = _get_state()
 
-    # 1. Fetch the question's pre-computed vector and text from Qdrant.
+    # 1. Fetch the question's pre-computed vector and text from the vector store.
     point_id = stable_question_point_id(question_id)
-    point = state.qdrant.get_point(QUESTIONS_COLLECTION, point_id, with_vectors=True)
+    point = state.vector_store.get_point(
+        QUESTIONS_COLLECTION, point_id, with_vectors=True
+    )
     if point is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Question '{question_id}' not found in Qdrant. "
+            detail=f"Question '{question_id}' not found in the vector store. "
             "Make sure it has been embedded with scripts/embed_questions.py.",
         )
 
@@ -142,14 +144,14 @@ def get_attributions(question_id: str, top_k: int = 3) -> dict:
     if not texte_question:
         raise HTTPException(
             status_code=422,
-            detail=f"Question '{question_id}' has no texte_question in its Qdrant payload.",
+            detail=f"Question '{question_id}' has no texte_question in its payload.",
         )
 
     # 2. Search the office_responsibilities collection using the stored vector
     #    (no embedding call needed).
     candidates = retrieve_candidates(
         precomputed_vectors=[vector],
-        qdrant=state.qdrant,
+        vector_store=state.vector_store,
         collection=OFFICE_COLLECTION,
         top_k=20,
     )
@@ -214,7 +216,7 @@ def get_similar(
     top_k: int = 10,
     score_threshold: float | None = None,
 ) -> dict:
-    """Return semantically similar items from a Qdrant collection.
+    """Return semantically similar items from a vector store collection.
 
     The source question must already be embedded in ``questions_opendata``.
     Its stored vector is used directly — no embedding API call is made.
@@ -231,10 +233,10 @@ def get_similar(
     Returns:
         A dict with ``question_id``, ``collection``, and a ``hits`` list sorted
         by descending rerank score.  Each hit has ``id``, ``score``, and
-        ``payload`` (collection-specific fields passed through from Qdrant).
+        ``payload`` (collection-specific fields).
 
     Raises:
-        404: Question not found in Qdrant (not yet embedded).
+        404: Question not found in the vector store (not yet embedded).
         422: ``collection`` is not one of the allowed values, or ``top_k``
             is out of range.
     """
@@ -256,13 +258,13 @@ def get_similar(
 
     # Fetch the question's pre-computed vector and text.
     source_point_id = stable_question_point_id(question_id)
-    point = state.qdrant.get_point(
+    point = state.vector_store.get_point(
         QUESTIONS_COLLECTION, source_point_id, with_vectors=True
     )
     if point is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Question '{question_id}' not found in Qdrant. "
+            detail=f"Question '{question_id}' not found in the vector store. "
             "Make sure it has been embedded with scripts/embed_questions.py.",
         )
 
@@ -271,7 +273,7 @@ def get_similar(
     if not texte_question:
         raise HTTPException(
             status_code=422,
-            detail=f"Question '{question_id}' has no texte_question in its Qdrant payload.",
+            detail=f"Question '{question_id}' has no texte_question in its payload.",
         )
 
     # When searching within the questions collection, exclude the source point
@@ -283,7 +285,7 @@ def get_similar(
     # Retrieve a larger candidate pool before reranking.
     candidates = retrieve_candidates(
         precomputed_vectors=[vector],
-        qdrant=state.qdrant,
+        vector_store=state.vector_store,
         collection=target_collection,
         top_k=max(top_k * 3, 20),
         query_filter=exclusion_filter,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Ingest office responsibility XLSX files into the Qdrant office_responsibilities collection."""
+"""Ingest office responsibility XLSX files into the vec_office_responsibilities pgvector table."""
 
 from __future__ import annotations
 
@@ -7,17 +7,16 @@ import argparse
 from pathlib import Path
 
 from qe.clients.embedding import EmbeddingClient
-from qe.clients.qdrant import QdrantClient
+from qe.clients.pgvector_client import PgvectorClient
 from qe.config import get_settings
 from qe.office_ingestion import OFFICE_COLLECTION, ingest_office_xlsx
 
 DEFAULT_INPUT_DIR = Path("data/office_responsibilities")
-DEFAULT_QDRANT_URL = "http://localhost:6333"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Ingest office responsibility XLSX files into Qdrant."
+        description="Ingest office responsibility XLSX files into the vector store."
     )
     parser.add_argument(
         "--dir",
@@ -28,12 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--collection",
         default=OFFICE_COLLECTION,
-        help=f"Qdrant collection name (default: {OFFICE_COLLECTION}).",
-    )
-    parser.add_argument(
-        "--qdrant-url",
-        default=DEFAULT_QDRANT_URL,
-        help=f"Qdrant base URL (default: {DEFAULT_QDRANT_URL}).",
+        help=f"Collection name (default: {OFFICE_COLLECTION}).",
     )
     return parser.parse_args()
 
@@ -52,14 +46,14 @@ def main() -> int:
         api_key=settings.socle_api_key,
         model=settings.embedding_model,
     )
-    qdrant = QdrantClient(args.qdrant_url)
+    vector_store = PgvectorClient()
 
     for xlsx_path in xlsx_files:
         ingest_office_xlsx(
             xlsx_path=xlsx_path,
             collection=args.collection,
             embedder=embedder,
-            qdrant=qdrant,
+            vector_store=vector_store,
         )
 
     return 0

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Embed parliamentary answers from PostgreSQL into a Qdrant collection.
+"""Embed parliamentary answers from PostgreSQL into pgvector.
 
 Reads answers from the `reponses` table (populated by ingest_an_legacy.py or
 ingest_senat.py), generates embeddings using ``texte_reponse``, and upserts the
-result into Qdrant.
+result into the `vec_answers_opendata` pgvector table.
 
-Incremental: answers are skipped if they are already in Qdrant with the same
+Incremental: answers are skipped if they are already embedded with the same
 embedding model and the same texte_reponse content (tracked via a SHA-256 hash
 stored in the point payload alongside ``embedding_model``). If the model
 changes, all answers are re-embedded.
 
-Answers deleted from PostgreSQL are cleaned up from Qdrant automatically.
+Answers deleted from PostgreSQL are cleaned up from the vector table automatically.
 
 Usage:
     # All answers
@@ -23,7 +23,6 @@ Requires:
     - SOCLE_IA_API_KEY environment variable set
     - LLM_BASE_URL (or EMBEDDINGS_URL) environment variable set
     - A running PostgreSQL with ingested answers (run ingest_an_legacy.py / ingest_senat.py first)
-    - A running Qdrant instance
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ import logging
 
 from qe.answer_embedding import DEFAULT_COLLECTION, embed_answers
 from qe.clients.embedding import EmbeddingClient
-from qe.clients.qdrant import QdrantClient
+from qe.clients.pgvector_client import PgvectorClient
 from qe.config import get_settings
 from qe.rate_limiter import TokenBucketRateLimiter
 
@@ -44,24 +43,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_BATCH_SIZE = 32
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Embed answers from PostgreSQL into Qdrant.",
+        description="Embed answers from PostgreSQL into the vector store.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--collection",
         default=DEFAULT_COLLECTION,
-        help=f"Qdrant collection name (default: {DEFAULT_COLLECTION}).",
-    )
-    parser.add_argument(
-        "--qdrant-url",
-        default=DEFAULT_QDRANT_URL,
-        help=f"Base URL for Qdrant (default: {DEFAULT_QDRANT_URL}).",
+        help=f"Collection name (default: {DEFAULT_COLLECTION}).",
     )
     parser.add_argument(
         "--embedding-model",
@@ -105,7 +98,7 @@ def main() -> None:
         model=embedding_model,
         api_key=settings.socle_api_key,
     )
-    qdrant = QdrantClient(args.qdrant_url)
+    vector_store = PgvectorClient()
     rate_limiter = (
         TokenBucketRateLimiter(rate_per_minute=args.rate_limit)
         if args.rate_limit
@@ -126,7 +119,7 @@ def main() -> None:
 
     stats = embed_answers(
         embedder=embedder,
-        qdrant=qdrant,
+        vector_store=vector_store,
         embedding_model=embedding_model,
         collection=args.collection,
         source=args.source,

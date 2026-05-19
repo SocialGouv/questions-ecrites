@@ -3,7 +3,7 @@
 
 Processes the ZIP downloaded by download_senat.py and upserts questions
 écrites from legislatures 14–17 into PostgreSQL, then embeds newly ingested
-answers into Qdrant.
+answers into pgvector.
 
 Usage:
     poetry run python scripts/ingest_senat.py --file data/senat/questions.zip
@@ -84,7 +84,7 @@ def main() -> None:
     parser.add_argument(
         "--skip-embed",
         action="store_true",
-        help="Skip embedding answers into Qdrant after ingest",
+        help="Skip embedding answers into pgvector after ingest",
     )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
