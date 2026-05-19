@@ -1,151 +1,94 @@
 # QE — Questions Écrites
 
-Ingests French parliamentary written questions (Assemblée Nationale + Sénat) from DILA open data into a local PostgreSQL database.
+Assigns French parliamentary written questions to the most relevant ministry office. Questions are downloaded directly from the Assemblée Nationale and Sénat open-data portals, ingested into PostgreSQL, embedded into pgvector, then matched to office responsibility descriptions using semantic search and Albert reranking.
 
 ## Installation
 
 ```bash
-# Start Postgres locally
 docker compose up postgres -d
-
-# Install dependencies
 poetry install
-
-# Run database migrations
 poetry run alembic upgrade head
 ```
 
-The Postgres service is available at `postgresql://qe:qe@localhost:5433/qe` by default. Override with `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, and `PGDATABASE` environment variables.
+## Data ingestion
 
-## Download open data archives
-
-Downloads `.taz` archives from the DILA open data server. Use `--years 2` to include the current year plus the 2 prior calendar years:
+### Assemblée Nationale
 
 ```bash
-poetry run python scripts/download_opendata.py --dir data/opendata/ --years 2
+# Download ZIP archives for legislatures XIV–XVII (--legislature 17 for one only)
+poetry run python scripts/download_an_legacy.py --dir data/an_archives/
+
+# Parse archives → PostgreSQL; auto-embeds newly ingested answers into pgvector
+poetry run python scripts/ingest_an_legacy.py --dir data/an_archives/
 ```
 
-Files already present are skipped automatically (idempotent).
+Legislature XVII is a live archive — re-download periodically to pick up new questions and answers.
 
-## Ingest into PostgreSQL
-
-Parses the downloaded archives and upserts questions into the `questions` table:
+### Sénat
 
 ```bash
-poetry run python scripts/ingest_opendata.py --dir data/opendata/
+# Download full SQL dump covering all legislatures (--force to re-fetch)
+poetry run python scripts/download_senat.py --dir data/senat/
+
+# Parse dump → PostgreSQL (legislatures 14–17); auto-embeds answers into pgvector
+poetry run python scripts/ingest_senat.py --file data/senat/questions.zip
 ```
 
-Add `--dry-run` to parse archives without writing to the database.
+## Embed questions
 
-## Embed answers
-
-Embeds all answers already stored in PostgreSQL into the `answers_opendata` Qdrant collection:
+Reads questions from PostgreSQL and upserts embeddings into the `questions_opendata` pgvector table. Incremental — already-embedded questions are skipped.
 
 ```bash
-docker compose up qdrant -d
-poetry run python scripts/embed_answers.py
-```
-
-Incremental — already-embedded answers are skipped. Use `--source AN` or `--source SENAT` to restrict to one chamber. This also runs automatically at the end of `ingest_an_legacy.py` and `ingest_senat.py`.
-
-## Compute question clusters
-
-Embeds all questions into Qdrant, then clusters them by semantic similarity and saves the results to PostgreSQL.
-
-```bash
-# 1. Start Qdrant
-docker compose up qdrant -d
-
-# 2. Embed questions (all statuses, so the UI can filter later)
 poetry run python scripts/embed_questions.py
-
-# 3. Cluster and persist to DB
-poetry run python scripts/cluster_questions.py
 ```
 
-Results are stored in `question_cluster_runs` and `question_cluster_members`. Re-run step 3 at any time to refresh — each run creates a new set of rows.
+Filters (combinable): `--filter-status EN_COURS|REPONDU`, `--ministry TEXT`, `--source AN|SENAT`, `--legislature N`, `--date-from YYYY-MM-DD`, `--date-to YYYY-MM-DD`.
 
-## Assign questions to offices
+## Ingest office responsibilities
 
-Routes each QE to the most relevant office based on office responsibility descriptions.
-
-### 1. Ingest office responsibilities
-
-Place XLSX files in `data/office_responsibilities/`. Each file must have columns: `direction`, `office_id`, `office_name`, `responsibilities`, `keywords`.
+Place XLSX files in `data/office_responsibilities/` (columns: `direction`, `office_id`, `office_name`, `responsibilities`, `keywords`), then:
 
 ```bash
 poetry run python scripts/ingest_office_responsibilities.py
 ```
 
-Re-run at any time — unchanged files are skipped automatically.
+Unchanged files are skipped automatically.
 
-### 2. Assign a question
+## Assign a question
 
 ```bash
 poetry run python scripts/assign_qe_to_office.py --question "Quel est le montant du RSA ?"
 ```
 
-Returns a ranked JSON list of offices. Options:
+Returns a ranked JSON list of offices. Options: `--top-k 20`, `--top-offices 5`.
 
-```
---top-k 20        candidates retrieved per query unit (default: 20)
---top-offices 5   offices to return (default: 5)
---collection      Qdrant collection name (default: office_responsibilities)
-```
+## Evaluate assignment quality
 
-### Evaluate assignment quality
-
-Measures Hit@1/3/5 and MRR against a ground-truth XLSX file with columns `question_id`, `question_text`, `expected_office_id`:
+Measures Hit@1/3/5 and MRR against a ground-truth XLSX (`question_id`, `question_text`, `expected_office_id`):
 
 ```bash
 poetry run python scripts/eval_office_assignment.py --input data/qe_attributions_DGCS.xlsx
 ```
 
-Options:
-
-```
---top-k 20          candidates retrieved per question (default: 20)
---top-offices 10    offices to rank per question (default: 10)
---chunks all        chunk types to search: all, responsibilities, keywords (default: all)
-```
-
-### Reset
+## Find similar questions
 
 ```bash
-poetry run python scripts/reset_dbs.py
+poetry run python scripts/find_similar_questions.py --question-id AN-17-QE-12345
+poetry run python scripts/find_similar_questions.py --text "Ma question porte sur les aides au logement..."
+poetry run python scripts/find_similar_questions.py --file data/qe_no_answers/qe.docx
 ```
 
-## Attribution API
+Options: `--collection questions_opendata|answers_opendata`, `--filter-status REPONDU`, `--threshold 0.70`.
 
-Exposes office attribution suggestions over HTTP for the frontend (`qe-front`).
-
-### Prerequisites
-
-Both Qdrant collections must be populated before starting the server:
+## API server
 
 ```bash
-# 1. Office responsibilities
-poetry run python scripts/ingest_office_responsibilities.py
-
-# 2. Questions (embed into questions_opendata)
-poetry run python scripts/embed_questions.py
+ALBERT_API_KEY=... poetry run uvicorn api.main:app --reload
 ```
 
-### Start the server
+### `GET /api/questions/{question_id}/attributions?top_k=3`
 
-```bash
-poetry run uvicorn api.main:app --reload
-```
-
-The server starts on `http://localhost:8000` by default.
-
-### `GET /api/questions/{question_id}/attributions`
-
-Returns the top 3 office suggestions for a question. The question's embedding is read directly from Qdrant — no call to Socle IA is made.
-
-```bash
-curl http://localhost:8000/api/questions/AN-17-QE-12345/attributions
-```
+Returns the top-N office suggestions. The question's embedding is read from pgvector — no call to Socle IA is made.
 
 ```json
 {
@@ -157,20 +100,36 @@ curl http://localhost:8000/api/questions/AN-17-QE-12345/attributions
       "office_name": "Sous-direction des affaires sociales",
       "direction": "Direction générale du travail",
       "score": 1.8432,
-      "confidence": 0.87
+      "relevance": 73.4
     }
   ]
 }
 ```
 
-`confidence` is a calibrated 0–1 value (sigmoid of the Albert cross-encoder logit). It is meaningful in absolute terms: values above ~0.7 indicate a strong match; values below ~0.3 indicate the question is likely outside this office's scope.
+`relevance` is a 0–100 score blending an absolute signal (sigmoid of the Albert reranker logit) and a relative signal (deviation from the pool median). High values indicate a strong match regardless of the other candidates.
 
-Optional query param: `top_k` (default `3`).
+### `GET /api/questions/{question_id}/similar?collection=answers&top_k=10`
 
-### Environment variables
+Returns semantically similar items from another collection, reranked with Albert.
 
-| Variable        | Required | Default                  | Description                     |
-| --------------- | -------- | ------------------------ | ------------------------------- |
-| `ALBERT_API_KEY`| Yes      | —                        | Albert reranking API key        |
-| `QDRANT_URL`    | No       | `http://localhost:6333`  | Qdrant base URL                 |
-| `CORS_ORIGINS`  | No       | `http://localhost:3000`  | Comma-separated allowed origins |
+- `collection`: `questions`, `answers`, or `offices`
+- `top_k`: 1–50 (default 10)
+- `score_threshold`: optional minimum cosine similarity (0.0–1.0)
+
+## Environment variables
+
+| Variable               | Required       | Default                     | Description                         |
+| ---------------------- | -------------- | --------------------------- | ----------------------------------- |
+| `SOCLE_IA_API_KEY`     | Yes            | —                           | Socle IA API key (embeddings + LLM) |
+| `LLM_BASE_URL`         | Yes            | —                           | Base URL for Socle IA services      |
+| `LLM_MODEL`            | Yes            | —                           | LLM model name                      |
+| `ALBERT_API_KEY`       | Yes (API only) | —                           | Albert reranking API key            |
+| `EMBEDDING_MODEL`      | No             | `BAAI/bge-m3`               | Embedding model                     |
+| `EMBEDDINGS_URL`       | No             | derived from `LLM_BASE_URL` | Override embeddings endpoint        |
+| `CHAT_COMPLETIONS_URL` | No             | derived from `LLM_BASE_URL` | Override chat completions endpoint  |
+| `CORS_ORIGINS`         | No             | `http://localhost:3000`     | Comma-separated allowed origins     |
+| `PGHOST`               | No             | `localhost`                 | PostgreSQL host                     |
+| `PGPORT`               | No             | `5433`                      | PostgreSQL port                     |
+| `PGUSER`               | No             | `qe`                        | PostgreSQL user                     |
+| `PGPASSWORD`           | No             | `qe`                        | PostgreSQL password                 |
+| `PGDATABASE`           | No             | `qe`                        | PostgreSQL database                 |

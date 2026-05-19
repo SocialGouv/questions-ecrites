@@ -6,17 +6,17 @@ Office assignment system for French parliamentary questions ("questions écrites
 
 **Pipeline:**
 
-1. **Ingest** office responsibilities (XLSX) → chunk → embed → store in Qdrant (`office_responsibilities` collection)
-2. **Ingest** questions → parse → store in PostgreSQL → embed → store in Qdrant (`questions_opendata` collection)
-3. **Assign** questions → fetch stored vector from Qdrant → search offices → rerank → return ranked offices with relevance scores
+1. **Ingest** office responsibilities (XLSX) → chunk → embed → store in pgvector (`vec_office_responsibilities` table)
+2. **Ingest** questions → parse → store in PostgreSQL → embed → store in pgvector (`vec_questions_opendata` table)
+3. **Assign** questions → fetch stored vector from pgvector → search offices → rerank → return ranked offices with relevance scores
 4. **Serve** assignments via HTTP API (`api/main.py` — FastAPI, `GET /api/questions/{question_id}/attributions`)
 
 ## Project conventions
 
-- **No `__init__.py` files.** This project uses implicit namespace packages (PEP 420). Do not create `__init__.py` files. Use direct imports to submodules (e.g. `from qe.clients.qdrant import QdrantClient`, not `from qe.clients import QdrantClient`).
+- **No `__init__.py` files.** This project uses implicit namespace packages (PEP 420). Do not create `__init__.py` files. Use direct imports to submodules (e.g. `from qe.clients.pgvector_client import PgvectorClient`, not `from qe.clients import PgvectorClient`).
 - **Frozen dataclasses** for immutable config (e.g. `Settings`, `SocleLLMClient`).
-- **Protocol classes** for plugin interfaces: `Chunker`, `DutyExtractor`.
-- **Deterministic UUIDs** from SHA-256 hashes of file paths/content for idempotent Qdrant upserts.
+- **Protocol classes** for plugin interfaces: `Chunker`, `DutyExtractor`, `VectorStore`.
+- **Deterministic UUIDs** from SHA-256 hashes of file paths/content for idempotent vector upserts.
 - **Python >= 3.12**, managed with Poetry. Use `poetry run` to run scripts.
 - **Keep code DRY.** Before adding logic to a script, check whether it already exists in `qe/`. Shared helpers belong in the package, not copy-pasted across scripts.
 
@@ -30,26 +30,29 @@ qe/                         # Main package (no __init__.py)
 ├── clients/
 │   ├── embedding.py        # EmbeddingClient → Socle IA embeddings API
 │   ├── llm.py              # SocleLLMClient → Socle IA chat completions
-│   ├── qdrant.py           # QdrantClient → Qdrant vector DB (REST)
+│   ├── pgvector_client.py  # PgvectorClient → pgvector-backed vector store
+│   ├── vector_store.py     # VectorStore Protocol — backend-agnostic interface
 │   └── rerank.py           # RerankClient → Albert reranking API
 ├── assignment.py           # retrieve_candidates(), build_matches(), aggregate_matches(), match_question_to_offices()
 ├── chunking.py             # Chunk dataclass, Chunker protocol
 ├── config.py               # Settings dataclass, get_settings()
 ├── db.py                   # PostgreSQL: ingest_manifest + chunk_cache tables
 ├── documents.py            # load_documents(), read_document() (.txt/.pdf/.doc/.docx)
-├── answer_embedding.py     # embed_answers() — embeds Reponse rows into answers_opendata Qdrant collection
+├── answer_embedding.py     # embed_answers() — embeds Reponse rows into vec_answers_opendata pgvector table
 ├── hashing.py              # stable_point_id(), stable_chunk_id(), stable_question_point_id(), stable_answer_point_id(), compute_content_hash()
 ├── llm_duties.py           # DutyExtractor protocol
 ├── models.py               # SQLAlchemy models: Question, Reponse, QuestionStateChange, …
 └── office_ingestion.py     # parse_office_xlsx(), ingest_office_xlsx()
 
 scripts/
-├── ingest_office_responsibilities.py  # Ingest office XLSX files into Qdrant
-├── embed_questions.py                 # Embed questions from PostgreSQL into Qdrant (questions_opendata)
-├── embed_answers.py                   # Embed answers from PostgreSQL into Qdrant (answers_opendata)
+├── ingest_office_responsibilities.py  # Ingest office XLSX files into pgvector
+├── embed_questions.py                 # Embed questions from PostgreSQL into pgvector (vec_questions_opendata)
+├── embed_answers.py                   # Embed answers from PostgreSQL into pgvector (vec_answers_opendata)
 ├── assign_qe_to_office.py             # CLI: assign a question to the most relevant office
 ├── eval_office_assignment.py          # Evaluate assignment quality against a ground-truth XLSX
-└── reset_dbs.py                       # Reset Qdrant collection + PostgreSQL state
+├── dump_qdrant.py                     # One-time: export Qdrant collections → JSONL
+├── load_pgvector.py                   # One-time: import JSONL dump → pgvector tables
+└── reset_dbs.py                       # Reset pgvector tables + PostgreSQL state
 
 data/
 ├── office_responsibilities/  # Input: office responsibility XLSX files
@@ -58,24 +61,23 @@ data/
 
 ## External services
 
-| Service        | Purpose                | Config                                                         |
-| -------------- | ---------------------- | -------------------------------------------------------------- |
-| **Socle IA**   | Embeddings + LLM chat  | `LLM_BASE_URL`, `SOCLE_IA_API_KEY`, `LLM_MODEL`                |
-| **Albert**     | Reranking              | `ALBERT_API_KEY`, default model `openweight-rerank`            |
-| **Qdrant**     | Vector DB              | Local via docker-compose                                       |
-| **PostgreSQL** | Ingest manifest        | `PGHOST/PORT/USER/PASSWORD/DATABASE`, local via docker-compose |
+| Service        | Purpose                        | Config                                                         |
+| -------------- | ------------------------------ | -------------------------------------------------------------- |
+| **Socle IA**   | Embeddings + LLM chat          | `LLM_BASE_URL`, `SOCLE_IA_API_KEY`, `LLM_MODEL`                |
+| **Albert**     | Reranking                      | `ALBERT_API_KEY`, default model `openweight-rerank`            |
+| **PostgreSQL** | Application data + vector store | `PGHOST/PORT/USER/PASSWORD/DATABASE`, local via docker-compose |
 
 Default embedding model: `BAAI/bge-m3` (via `EMBEDDING_MODEL` env var).
 
-## Qdrant collections
+## pgvector tables
 
-| Collection               | Contents                                    | Populated by                              |
-| ------------------------ | ------------------------------------------- | ----------------------------------------- |
-| `office_responsibilities`| Office chunks (responsibilities + keywords) | `scripts/ingest_office_responsibilities.py` |
-| `questions_opendata`     | Embedded parliamentary questions            | `scripts/embed_questions.py`              |
-| `answers_opendata`       | Embedded parliamentary answers (Reponse)    | `scripts/embed_answers.py`, auto-called by `scripts/ingest_an_legacy.py` and `scripts/ingest_senat.py` |
+| Table                        | Contents                                    | Populated by                              |
+| ---------------------------- | ------------------------------------------- | ----------------------------------------- |
+| `vec_office_responsibilities`| Office chunks (responsibilities + keywords) | `scripts/ingest_office_responsibilities.py` |
+| `vec_questions_opendata`     | Embedded parliamentary questions            | `scripts/embed_questions.py`              |
+| `vec_answers_opendata`       | Embedded parliamentary answers (Reponse)    | `scripts/embed_answers.py`, auto-called by `scripts/ingest_an_legacy.py` and `scripts/ingest_senat.py` |
 
-Point IDs in all collections are deterministic UUIDs derived from SHA-256 hashes (see `qe/hashing.py`). Use `stable_question_point_id(question_id)` to resolve a question's Qdrant point ID, and `stable_answer_point_id(reponse_id)` for answers.
+Row IDs in all tables are deterministic UUID strings derived from SHA-256 hashes (see `qe/hashing.py`). Use `stable_question_point_id(question_id)` to resolve a question's vector row ID, and `stable_answer_point_id(reponse_id)` for answers.
 
 ## API server
 
@@ -87,17 +89,18 @@ ALBERT_API_KEY=... poetry run uvicorn api.main:app --reload
 
 **Relevance:** `relevance` is a blend of two signals (70 % absolute + 30 % relative). The absolute component is `sigmoid(best_chunk_score) × 100` — the model's raw judgment, independent of other results. The relative component is a pool-median-centred linear adjustment: each logit above the pool median adds ~6 pp, each logit below subtracts ~6 pp. The blend keeps tightly-clustered scores close together while making real score gaps visible. A question with no good match yields a low relevance for every office.
 
-Configurable via env vars: `ALBERT_API_KEY` (required), `QDRANT_URL` (default `http://localhost:6333`), `CORS_ORIGINS` (default `http://localhost:3000`).
+Configurable via env vars: `ALBERT_API_KEY` (required), `CORS_ORIGINS` (default `http://localhost:3000`).
 
 ## Database schema (Alembic)
 
 - `ingest_manifest(path PK, document_hash, updated_at)` — tracks ingested files for incremental updates
+- `vec_office_responsibilities`, `vec_questions_opendata`, `vec_answers_opendata` — pgvector tables (1024-dim HNSW index)
 
 Run migrations: `poetry run alembic upgrade head`
 
 ## Office chunking
 
-Each office row in an XLSX produces 2 Qdrant chunks:
+Each office row in an XLSX produces 2 vector chunks:
 
 - `responsibilities` — `"{office_name}\n{responsibilities}"` — semantic coverage
 - `keywords` — `"{office_name}: {keywords}"` — exact-term matching via embedding
