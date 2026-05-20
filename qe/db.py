@@ -21,7 +21,9 @@ from qe.models import (
 
 
 def _build_database_url() -> str:
-    """Build a psycopg3 SQLAlchemy URL from PG* environment variables."""
+    """Build a psycopg3 SQLAlchemy URL from DATABASE_URL or PG* environment variables."""
+    if url := os.getenv("DATABASE_URL"):
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
     host = os.getenv("PGHOST", "localhost")
     port = os.getenv("PGPORT", "5433")
     user = os.getenv("PGUSER", "qe")
