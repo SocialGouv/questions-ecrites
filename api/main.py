@@ -12,10 +12,11 @@ from typing import AsyncIterator
 
 from api.questions import router as questions_router
 from api.state import ALBERT_BASE_URL, ALBERT_RERANK_MODEL, AppState, set_state
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from qe.clients.pgvector_client import PgvectorClient
 from qe.clients.rerank import RerankClient
+from qe.db import check_db_connection
 
 
 @asynccontextmanager
@@ -54,3 +55,10 @@ app.add_middleware(
 )
 
 app.include_router(questions_router)
+
+
+@app.get("/healthz")
+def healthz():
+    if not check_db_connection():
+        raise HTTPException(status_code=503, detail="database unreachable")
+    return {"status": "ok"}
