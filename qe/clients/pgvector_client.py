@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Sequence
 
 import sqlalchemy as sa
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from qe import db
@@ -52,7 +52,7 @@ def _build_where_clause(model, filter_payload: dict) -> sa.sql.ClauseElement | N
     """Translate a Qdrant filter dict into a SQLAlchemy WHERE clause.
 
     Supported patterns (the only ones used in this codebase):
-      must  / key+match  →  json_extract_path_text(payload, key) = value
+      must  / key+match  →  payload ->> key = value
       must  / has_id     →  id IN (...)
       must_not / has_id  →  id NOT IN (...)
     """
@@ -62,7 +62,7 @@ def _build_where_clause(model, filter_payload: dict) -> sa.sql.ClauseElement | N
         if "key" in clause and "match" in clause:
             key = clause["key"]
             value = str(clause["match"]["value"])
-            clauses.append(func.json_extract_path_text(model.payload, key) == value)
+            clauses.append(model.payload[key].astext == value)
         elif "has_id" in clause:
             clauses.append(model.id.in_(clause["has_id"]))
 
