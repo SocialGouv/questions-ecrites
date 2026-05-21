@@ -209,6 +209,103 @@ def get_attributions(question_id: str, top_k: int = 3) -> dict:
     return {"question_id": question_id, "attributions": attributions}
 
 
+@router.get("/{question_id}/direction-attributions")
+def get_direction_attributions(question_id: str, top_k: int = 3) -> dict:
+    """Return the top-N direction attribution suggestions for a question.
+
+    Runs the same retrieve → rerank pipeline as :func:`get_direction_attributions`
+    but aggregates scores by ``direction`` (one level above offices in the
+    French ministerial hierarchy) instead of by ``office_id``.
+
+    Args:
+        question_id: Composite question ID, e.g. ``AN-17-QE-12345``.
+        top_k: Number of direction suggestions to return (default 3).
+
+    Returns:
+        A dict with ``question_id`` and an ``attributions`` list sorted by
+        descending relevance, each entry containing ``rank``, ``direction``,
+        ``score``, and ``relevance``.
+
+    Raises:
+        404: Question point not found in the vector store (not yet embedded).
+        422: ``top_k`` is less than 1.
+    """
+    if top_k < 1:
+        raise HTTPException(status_code=422, detail="top_k must be at least 1.")
+
+    state = _get_state()
+
+    point_id = stable_question_point_id(question_id)
+    point = state.vector_store.get_point(
+        QUESTIONS_COLLECTION, point_id, with_vectors=True
+    )
+    if point is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Question '{question_id}' not found in the vector store. "
+            "Make sure it has been embedded with scripts/embed_questions.py.",
+        )
+
+    vector: list[float] = point["vector"]
+    payload = point.get("payload") or {}
+    texte_question: str = payload.get("texte_question") or ""
+
+    if not texte_question:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Question '{question_id}' has no texte_question in its payload.",
+        )
+
+    candidates = retrieve_candidates(
+        precomputed_vectors=[vector],
+        vector_store=state.vector_store,
+        collection=OFFICE_COLLECTION,
+        top_k=20,
+    )
+
+    matches = build_matches(
+        candidates=candidates,
+        reranker=state.reranker,
+        query=texte_question,
+    )
+
+    # Aggregate by direction: group all reranked chunks by their direction,
+    # keep the top-6 highest-scoring chunks per direction (≈ top 3 offices × 2
+    # chunks), and sum their scores.  The cap avoids directions with many
+    # offices dominating purely by volume.
+    max_chunks_per_direction = 6
+    chunks_by_direction: dict[str, list[dict]] = {}
+    for match in matches:
+        direction = match.get("direction")
+        if not direction:
+            continue
+        chunks_by_direction.setdefault(direction, []).append(match)
+
+    score_by_direction: dict[str, float] = {}
+    for direction, chunks in chunks_by_direction.items():
+        chunks.sort(key=lambda m: -(m.get("score") or 0.0))
+        top_chunks = chunks[:max_chunks_per_direction]
+        score_by_direction[direction] = sum(
+            float(m.get("score") or 0.0) for m in top_chunks
+        )
+
+    pool_scores = list(score_by_direction.values())
+    attributions: list[dict] = []
+    for direction, agg_score in sorted(score_by_direction.items(), key=lambda x: -x[1]):
+        attributions.append(
+            {
+                "rank": len(attributions) + 1,
+                "direction": direction,
+                "score": round(agg_score, 4),
+                "relevance": _to_relevance(agg_score, pool_scores),
+            }
+        )
+        if len(attributions) >= top_k:
+            break
+
+    return {"question_id": question_id, "attributions": attributions}
+
+
 @router.get("/{question_id}/similar")
 def get_similar(
     question_id: str,
