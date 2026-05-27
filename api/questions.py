@@ -6,8 +6,9 @@ import logging
 import math
 import statistics
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
+from api.state import _get_state
 from qe.assignment import (
     aggregate_matches,
     build_matches,
@@ -16,8 +17,6 @@ from qe.assignment import (
 )
 from qe.hashing import stable_question_point_id
 from qe.office_ingestion import OFFICE_COLLECTION
-
-from api.state import _get_state
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +99,11 @@ def _to_relevance(agg_score: float, pool_scores: list[float]) -> float:
 
 
 @router.get("/{question_id}/attributions")
-def get_attributions(question_id: str, top_k: int = 3) -> dict:
+def get_attributions(
+    question_id: str,
+    top_k: int = 3,
+    directions: list[str] = Query(default=[]),
+) -> dict:
     """Return the top-N office attribution suggestions for a question.
 
     The question must already be embedded in the ``questions_opendata``
@@ -110,6 +113,7 @@ def get_attributions(question_id: str, top_k: int = 3) -> dict:
     Args:
         question_id: Composite question ID, e.g. ``AN-17-QE-12345``.
         top_k: Number of office suggestions to return (default 3).
+        directions: Optional list of ministerial directions to filter the search
 
     Returns:
         A dict with ``question_id`` and an ``attributions`` list sorted by
@@ -149,11 +153,17 @@ def get_attributions(question_id: str, top_k: int = 3) -> dict:
 
     # 2. Search the office_responsibilities collection using the stored vector
     #    (no embedding call needed).
+    direction_filter: dict | None = None
+    if directions:
+        direction_filter = {
+            "must": [{"key": "direction", "match": {"any": directions}}]
+        }
     candidates = retrieve_candidates(
         precomputed_vectors=[vector],
         vector_store=state.vector_store,
         collection=OFFICE_COLLECTION,
         top_k=20,
+        query_filter=direction_filter,
     )
 
     # 3. Rerank candidates against the question text.
@@ -210,7 +220,10 @@ def get_attributions(question_id: str, top_k: int = 3) -> dict:
 
 
 @router.get("/{question_id}/direction-attributions")
-def get_direction_attributions(question_id: str, top_k: int = 3) -> dict:
+def get_direction_attributions(
+    question_id: str,
+    top_k: int = 3,
+) -> dict:
     """Return the top-N direction attribution suggestions for a question.
 
     Runs the same retrieve → rerank pipeline as :func:`get_direction_attributions`

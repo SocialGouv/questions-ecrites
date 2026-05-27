@@ -1,7 +1,7 @@
 """pgvector-backed VectorStore implementation.
 
-Drop-in replacement for QdrantClient. Uses the existing PostgreSQL connection
-managed by qe.db — no additional connection config required.
+Uses the existing PostgreSQL connection managed by qe.db — no additional
+connection config required.
 
 Collection name → SQL table mapping
 ------------------------------------
@@ -9,8 +9,8 @@ office_responsibilities  →  vec_office_responsibilities
 questions_opendata       →  vec_questions_opendata
 answers_opendata         →  vec_answers_opendata
 
-Point dict shapes (identical to QdrantClient contract)
--------------------------------------------------------
+Point dict shapes
+-----------------
 Upsert input:  {"id": str, "vector": list[float], "payload": dict}
 Search output: {"id": str, "score": float, "payload": dict}
                score is cosine similarity in [0, 1]
@@ -49,7 +49,7 @@ def _resolve(name: str):
 
 
 def _build_where_clause(model, filter_payload: dict) -> sa.sql.ClauseElement | None:
-    """Translate a Qdrant filter dict into a SQLAlchemy WHERE clause.
+    """Translate a filter dict into a SQLAlchemy WHERE clause.
 
     Supported patterns (the only ones used in this codebase):
       must  / key+match  →  payload ->> key = value
@@ -61,8 +61,12 @@ def _build_where_clause(model, filter_payload: dict) -> sa.sql.ClauseElement | N
     for clause in filter_payload.get("must", []):
         if "key" in clause and "match" in clause:
             key = clause["key"]
-            value = str(clause["match"]["value"])
-            clauses.append(model.payload[key].astext == value)
+            match = clause["match"]
+            if "value" in match:
+                clauses.append(model.payload[key].astext == str(match["value"]))
+            elif "any" in match:
+                values = [str(v) for v in match["any"]]
+                clauses.append(model.payload[key].astext.in_(values))
         elif "has_id" in clause:
             clauses.append(model.id.in_(clause["has_id"]))
 
@@ -272,7 +276,7 @@ class PgvectorClient:
         Score mapping: pgvector's <=> operator returns cosine *distance* in
         [0, 2]. BAAI/bge-m3 outputs L2-normalised vectors, so:
             similarity = 1 - distance
-        The returned score field matches the Qdrant convention (similarity ∈ [0, 1]).
+        The returned score is cosine similarity ∈ [0, 1].
         """
         model = _resolve(collection)
         query_vec = list(vector)
