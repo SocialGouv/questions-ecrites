@@ -7,10 +7,6 @@ from dataclasses import dataclass
 from qe.clients.rerank import RerankClient
 from qe.clients.vector_store import VectorStore
 
-ALBERT_BASE_URL = "https://albert.api.etalab.gouv.fr"
-ALBERT_RERANK_MODEL = "openweight-rerank"
-
-
 @dataclass
 class AppState:
     vector_store: VectorStore

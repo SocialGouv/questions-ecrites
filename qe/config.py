@@ -16,6 +16,8 @@ class Settings:
 
     socle_api_key: str
     albert_api_key: str
+    albert_base_url: str
+    albert_rerank_model: str
     llm_base_url: str
     chat_completions_url: str
     embeddings_url: str
@@ -45,6 +47,8 @@ def get_settings() -> Settings:
 
     socle_api_key = os.environ.get("PLIAGE_API_KEY", "")
     albert_api_key = os.environ.get("ALBERT_API_KEY", "")
+    albert_base_url = os.environ.get("ALBERT_BASE_URL", "https://albert.api.etalab.gouv.fr")
+    albert_rerank_model = os.environ.get("ALBERT_RERANK_MODEL", "openweight-rerank")
     llm_model = os.environ.get("LLM_MODEL", "")
     embedding_model = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3")
 
@@ -64,6 +68,8 @@ def get_settings() -> Settings:
     return Settings(
         socle_api_key=socle_api_key,
         albert_api_key=albert_api_key,
+        albert_base_url=albert_base_url,
+        albert_rerank_model=albert_rerank_model,
         llm_base_url=llm_base_url,
         chat_completions_url=chat_completions_url,
         embeddings_url=embeddings_url,

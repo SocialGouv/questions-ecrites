@@ -13,8 +13,6 @@ from qe.clients.rerank import RerankClient
 from qe.config import get_settings
 from qe.office_ingestion import OFFICE_COLLECTION
 
-DEFAULT_ALBERT_BASE_URL = "https://albert.api.etalab.gouv.fr"
-DEFAULT_ALBERT_MODEL = "openweight-rerank"
 DEFAULT_TOP_K = 20
 DEFAULT_TOP_OFFICES = 5
 
@@ -63,8 +61,8 @@ def main() -> int:
     )
     vector_store = PgvectorClient()
     reranker = RerankClient(
-        base_url=DEFAULT_ALBERT_BASE_URL,
-        model=DEFAULT_ALBERT_MODEL,
+        base_url=settings.albert_base_url,
+        model=settings.albert_rerank_model,
         api_key=settings.albert_api_key,
     )
 
