@@ -120,7 +120,7 @@ Returns semantically similar items from another collection, reranked with Albert
 
 | Variable               | Required       | Default                     | Description                         |
 | ---------------------- | -------------- | --------------------------- | ----------------------------------- |
-| `SOCLE_IA_API_KEY`     | Yes            | —                           | Socle IA API key (embeddings + LLM) |
+| `PLIAGE_API_KEY`       | Yes            | —                           | Socle IA API key (embeddings + LLM) |
 | `LLM_BASE_URL`         | Yes            | —                           | Base URL for Socle IA services      |
 | `LLM_MODEL`            | Yes            | —                           | LLM model name                      |
 | `ALBERT_API_KEY`       | Yes (API only) | —                           | Albert reranking API key            |

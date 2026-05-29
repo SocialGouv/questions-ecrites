@@ -32,7 +32,7 @@ Usage:
     poetry run python scripts/embed_questions.py --source AN --legislature 17 --rate-limit 60
 
 Requires:
-    - SOCLE_IA_API_KEY environment variable set
+    - PLIAGE_API_KEY environment variable set
     - LLM_BASE_URL (or EMBEDDINGS_URL) environment variable set
     - A running PostgreSQL with ingested questions (run ingest_an_legacy.py / ingest_senat.py first)
 """
@@ -158,7 +158,7 @@ def _parse_args() -> EmbedConfig:
     args = parser.parse_args()
 
     settings = get_settings()
-    api_key = require_api_key("SOCLE_IA_API_KEY")
+    api_key = require_api_key("PLIAGE_API_KEY")
 
     def _parse_date(val: str | None, flag: str) -> date | None:
         if val is None:

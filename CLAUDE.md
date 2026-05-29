@@ -61,21 +61,21 @@ data/
 
 ## External services
 
-| Service        | Purpose                        | Config                                                         |
-| -------------- | ------------------------------ | -------------------------------------------------------------- |
-| **Socle IA**   | Embeddings + LLM chat          | `LLM_BASE_URL`, `SOCLE_IA_API_KEY`, `LLM_MODEL`                |
-| **Albert**     | Reranking                      | `ALBERT_API_KEY`, default model `openweight-rerank`            |
+| Service        | Purpose                         | Config                                                         |
+| -------------- | ------------------------------- | -------------------------------------------------------------- |
+| **Socle IA**   | Embeddings + LLM chat           | `LLM_BASE_URL`, `PLIAGE_API_KEY`, `LLM_MODEL`                  |
+| **Albert**     | Reranking                       | `ALBERT_API_KEY`, default model `openweight-rerank`            |
 | **PostgreSQL** | Application data + vector store | `PGHOST/PORT/USER/PASSWORD/DATABASE`, local via docker-compose |
 
 Default embedding model: `BAAI/bge-m3` (via `EMBEDDING_MODEL` env var).
 
 ## pgvector tables
 
-| Table                        | Contents                                    | Populated by                              |
-| ---------------------------- | ------------------------------------------- | ----------------------------------------- |
-| `vec_office_responsibilities`| Office chunks (responsibilities + keywords) | `scripts/ingest_office_responsibilities.py` |
-| `vec_questions_opendata`     | Embedded parliamentary questions            | `scripts/embed_questions.py`              |
-| `vec_answers_opendata`       | Embedded parliamentary answers (Reponse)    | `scripts/embed_answers.py`, auto-called by `scripts/ingest_an_legacy.py` and `scripts/ingest_senat.py` |
+| Table                         | Contents                                    | Populated by                                                                                           |
+| ----------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `vec_office_responsibilities` | Office chunks (responsibilities + keywords) | `scripts/ingest_office_responsibilities.py`                                                            |
+| `vec_questions_opendata`      | Embedded parliamentary questions            | `scripts/embed_questions.py`                                                                           |
+| `vec_answers_opendata`        | Embedded parliamentary answers (Reponse)    | `scripts/embed_answers.py`, auto-called by `scripts/ingest_an_legacy.py` and `scripts/ingest_senat.py` |
 
 Row IDs in all tables are deterministic UUID strings derived from SHA-256 hashes (see `qe/hashing.py`). Use `stable_question_point_id(question_id)` to resolve a question's vector row ID, and `stable_answer_point_id(reponse_id)` for answers.
 

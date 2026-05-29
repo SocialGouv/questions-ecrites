@@ -20,7 +20,7 @@ Usage:
     poetry run python scripts/embed_answers.py --source AN --rate-limit 60
 
 Requires:
-    - SOCLE_IA_API_KEY environment variable set
+    - PLIAGE_API_KEY environment variable set
     - LLM_BASE_URL (or EMBEDDINGS_URL) environment variable set
     - A running PostgreSQL with ingested answers (run ingest_an_legacy.py / ingest_senat.py first)
 """

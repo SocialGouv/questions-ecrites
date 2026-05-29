@@ -43,14 +43,14 @@ def get_settings() -> Settings:
     if not embeddings_url and llm_base_url:
         embeddings_url = f"{llm_base_url.rstrip('/')}/api/embeddings"
 
-    socle_api_key = os.environ.get("SOCLE_IA_API_KEY", "")
+    socle_api_key = os.environ.get("PLIAGE_API_KEY", "")
     albert_api_key = os.environ.get("ALBERT_API_KEY", "")
     llm_model = os.environ.get("LLM_MODEL", "")
     embedding_model = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3")
 
     missing: list[str] = []
     if not socle_api_key:
-        missing.append("SOCLE_IA_API_KEY")
+        missing.append("PLIAGE_API_KEY")
     if not llm_base_url and not (chat_completions_url and embeddings_url):
         missing.append("LLM_BASE_URL (or both CHAT_COMPLETIONS_URL and EMBEDDINGS_URL)")
     if not llm_model:

@@ -26,7 +26,7 @@ Usage:
     --threshold 0.70
 
 Requires:
-  - SOCLE_IA_API_KEY environment variable set
+  - PLIAGE_API_KEY environment variable set
   - LLM_BASE_URL (or EMBEDDINGS_URL) environment variable set
   - A populated pgvector table (run embed_questions.py first)
 """
@@ -136,7 +136,7 @@ def parse_args() -> SearchConfig:
     args = parser.parse_args()
 
     settings = get_settings()
-    api_key = require_api_key("SOCLE_IA_API_KEY")
+    api_key = require_api_key("PLIAGE_API_KEY")
 
     if args.file:
         question_text = read_document(args.file).strip()
