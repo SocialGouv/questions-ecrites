@@ -56,5 +56,4 @@ tmp/
 data/
 .chunk_cache
 
-# Falcon
-.falcon
+.claude
