@@ -446,15 +446,29 @@ def _parse_an_question_element(  # noqa: C901
             date_pub = _parse_an_date(_t(first_tq.find(tag("infoJO")), "dateJO"))
             texte_question = _t(first_tq, "texte") or ""
 
-    # Objet — teteAnalyse if set, else first ANA element
+    # Objet — try, in order:
+    #   1. <teteAnalyse>                       (present on all formats)
+    #   2. <analyses><analyse>…</analyse>…</   (modern format, XVI–XVII)
+    #   3. <ANALYSE><ANA>…</ANA>…</ANALYSE>    (legacy uppercase format)
+    #
+    # Without step 2, ~18 700 AN XVI and ~6 750 AN XVII questions end up
+    # with objet=NULL because their teteAnalyse is empty and the legacy
+    # uppercase tags don't exist — the AN reference schema switched to
+    # lowercase plural-parent tags somewhere between XV and XVI.
     objet: str | None = None
     idx = elem.find(tag("indexationAN"))
     if idx is not None:
         objet = _t(idx, "teteAnalyse")
         if not objet:
-            analyse = idx.find(tag("ANALYSE"))
-            if analyse is not None:
-                objet = _t(analyse, "ANA")
+            analyses = idx.find(tag("analyses"))
+            if analyses is not None:
+                first = analyses.find(tag("analyse"))
+                if first is not None and first.text:
+                    objet = first.text.strip()
+        if not objet:
+            analyse_legacy = idx.find(tag("ANALYSE"))
+            if analyse_legacy is not None:
+                objet = _t(analyse_legacy, "ANA")
 
     # Response
     etat = "EN_COURS"
