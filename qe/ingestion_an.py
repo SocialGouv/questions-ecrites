@@ -458,17 +458,11 @@ def _parse_an_question_element(  # noqa: C901
     objet: str | None = None
     idx = elem.find(tag("indexationAN"))
     if idx is not None:
-        objet = _t(idx, "teteAnalyse")
-        if not objet:
-            analyses = idx.find(tag("analyses"))
-            if analyses is not None:
-                first = analyses.find(tag("analyse"))
-                if first is not None and first.text:
-                    objet = first.text.strip()
-        if not objet:
-            analyse_legacy = idx.find(tag("ANALYSE"))
-            if analyse_legacy is not None:
-                objet = _t(analyse_legacy, "ANA")
+        objet = (
+            _t(idx, "teteAnalyse")
+            or _t(idx, "analyses", "analyse")
+            or _t(idx, "ANALYSE", "ANA")
+        )
 
     # Response
     etat = "EN_COURS"
