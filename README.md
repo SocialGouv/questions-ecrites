@@ -133,3 +133,9 @@ Returns semantically similar items from another collection, reranked with Albert
 | `PGUSER`               | No             | `qe`                        | PostgreSQL user                     |
 | `PGPASSWORD`           | No             | `qe`                        | PostgreSQL password                 |
 | `PGDATABASE`           | No             | `qe`                        | PostgreSQL database                 |
+
+## Interact with DB in Socle Data
+
+```bash
+kubectl --kubeconfig kubeconfig.yaml port-forward svc/questions-ecrites-db-rw -n questions-ecrites 5431:5432
+```
