@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from qe.models import (
     ChunkCache,
     IngestManifest,
-    QuestionCluster,
 )
 
 # ---------------------------------------------------------------------------
@@ -179,26 +178,6 @@ def delete_chunk_cache(strategy: str, document_hash: str) -> None:
             )
         )
 
-
-# ---------------------------------------------------------------------------
-# question_clusters
-# ---------------------------------------------------------------------------
-
-
-def save_clusters(clusters: list[dict]) -> None:
-    """Replace all question clusters with the new results."""
-    with get_session() as session:
-        session.execute(delete(QuestionCluster))
-        rows = [
-            QuestionCluster(
-                question_id=q["question_id"],
-                cluster_id=cluster["cluster_id"],
-                similarity_to_centroid=q["similarity_to_centroid"],
-            )
-            for cluster in clusters
-            for q in cluster["questions"]
-        ]
-        session.add_all(rows)
 
 
 def delete_chunk_cache_for_document_hashes(document_hashes: Sequence[str]) -> int:

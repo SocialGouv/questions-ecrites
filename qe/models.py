@@ -280,20 +280,6 @@ class IngestCursor(Base):
     )
 
 
-# ---------------------------------------------------------------------------
-# Question clustering table
-# ---------------------------------------------------------------------------
-
-
-class QuestionCluster(Base):
-    __tablename__ = "question_clusters"
-
-    question_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("questions.id"), primary_key=True
-    )
-    cluster_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    similarity_to_centroid: Mapped[float] = mapped_column(nullable=False)
-
 
 # ---------------------------------------------------------------------------
 # Vector store tables (pgvector — replaces Qdrant collections)

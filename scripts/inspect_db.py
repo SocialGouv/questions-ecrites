@@ -20,7 +20,6 @@ from qe.models import (
     Ministere,
     Question,
     QuestionAttribution,
-    QuestionCluster,
     QuestionStateChange,
     Reponse,
 )
@@ -43,7 +42,6 @@ def _counts(session) -> None:
         ("question_state_changes", QuestionStateChange),
         ("question_attributions", QuestionAttribution),
         ("ingest_cursors", IngestCursor),
-        ("question_clusters", QuestionCluster),
     ]
     for name, model in tables:
         count = session.execute(select(func.count()).select_from(model)).scalar()
@@ -130,30 +128,6 @@ def _questions_by_ministry(session) -> None:
         print(f"  {count:>6}  {label}")
 
 
-def _cluster_runs(session, n: int) -> None:
-    _section("question_clusters — summary")
-    total_questions = session.execute(
-        select(func.count()).select_from(QuestionCluster)
-    ).scalar()
-    total_clusters = session.execute(
-        select(func.count(QuestionCluster.cluster_id.distinct()))
-    ).scalar()
-    if total_questions == 0:
-        print("  (empty)")
-        return
-    print(f"  {total_clusters} cluster(s)  /  {total_questions} question(s)")
-
-    # Show the n largest clusters.
-    rows = session.execute(
-        select(QuestionCluster.cluster_id, func.count().label("size"))
-        .group_by(QuestionCluster.cluster_id)
-        .order_by(func.count().desc())
-        .limit(n)
-    ).all()
-    print(f"\n  Top {n} cluster(s) by size:")
-    for cluster_id, size in rows:
-        print(f"    cluster_id={cluster_id:<6} size={size}")
-
 
 def _cursors(session) -> None:
     _section("ingest_cursors")
@@ -187,7 +161,6 @@ def main() -> None:
         _questions_by_state(session)
         _questions_by_source(session)
         _questions_by_ministry(session)
-        _cluster_runs(session, args.rows)
         _cursors(session)
 
     print(f"\n{_SEP}\n")
