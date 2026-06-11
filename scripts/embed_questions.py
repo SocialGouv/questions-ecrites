@@ -414,6 +414,7 @@ def embed_questions(  # noqa: C901
                             "texte_question": text[:2000],
                             "texte_preview": make_preview(text),
                             "auteur_nom": question.auteur_nom,
+                            # Snapshot at embedding time — can go stale if a reattribution happens later.
                             "ministre_attributaire_libelle": question.ministre_attributaire_libelle,
                             "date_publication_jo": date_str,
                         },

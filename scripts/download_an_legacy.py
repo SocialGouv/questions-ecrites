@@ -30,7 +30,10 @@ Available archives:
                          questions and answers.
 
 Usage:
-    # Download XIV, XV, XVI, and XVII archives (default)
+    # Download only the live legislature and immediately ingest (recommended daily run)
+    poetry run python scripts/download_an_legacy.py --dir data/an_archives/ --legislature 17 --ingest
+
+    # Download XIV, XV, XVI, and XVII archives (default, no ingest)
     poetry run python scripts/download_an_legacy.py --dir data/an_archives/
 
     # Download only a specific legislature
@@ -43,6 +46,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import sys
 from pathlib import Path
@@ -106,12 +110,39 @@ def _download(url: str, dest: Path, http: requests.Session) -> bool:
         return False
 
 
-def run(dest_dir: Path, legislatures: list[int], dry_run: bool) -> None:
+def _ingest(dest_dir: Path, legislatures: list[int]) -> None:
+    """Ingest downloaded ZIP archives into PostgreSQL."""
+    from qe import db
+    from qe.ingestion_an import ingest_an_zip_file
+
+    manifest = db.get_manifest_entries()
+    for leg in sorted(legislatures):
+        zip_path = dest_dir / f"Questions_ecrites_{_ROMAN[leg]}.xml.zip"
+        if not zip_path.exists():
+            logger.warning("Legislature %d — archive not found, skipping ingest: %s", leg, zip_path)
+            continue
+        file_hash = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+        if manifest.get(str(zip_path)) == file_hash:
+            logger.info("Legislature %d — already ingested (hash unchanged), skipping", leg)
+            continue
+        logger.info("Legislature %d — ingesting %s", leg, zip_path.name)
+        stats = ingest_an_zip_file(zip_path)
+        db.upsert_manifest(str(zip_path), file_hash)
+        logger.info(
+            "  ingested: %d questions (%d inserted, %d updated)",
+            stats.questions_parsed,
+            stats.questions_inserted,
+            stats.questions_updated,
+        )
+
+
+def run(dest_dir: Path, legislatures: list[int], dry_run: bool, ingest: bool) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
     http = requests.Session()
     http.headers["User-Agent"] = "qe-ingestion/1.0"
 
     errors: list[str] = []
+    downloaded: list[int] = []
 
     for leg in sorted(legislatures):
         url = _ARCHIVES[leg]
@@ -120,6 +151,7 @@ def run(dest_dir: Path, legislatures: list[int], dry_run: bool) -> None:
 
         if dest.exists() and leg not in _LIVE_LEGISLATURES:
             logger.info("Legislature %d — already present: %s", leg, filename)
+            downloaded.append(leg)
             continue
 
         if dest.exists() and leg in _LIVE_LEGISLATURES:
@@ -136,6 +168,7 @@ def run(dest_dir: Path, legislatures: list[int], dry_run: bool) -> None:
             if ok:
                 size_mb = dest.stat().st_size / 1_000_000
                 logger.info("  saved: %s (%.1f MB)", dest, size_mb)
+                downloaded.append(leg)
             else:
                 errors.append(filename)
 
@@ -143,7 +176,9 @@ def run(dest_dir: Path, legislatures: list[int], dry_run: bool) -> None:
         logger.warning("Failed downloads (%d): %s", len(errors), ", ".join(errors))
         sys.exit(1)
 
-    if not dry_run:
+    if ingest and not dry_run:
+        _ingest(dest_dir, downloaded)
+    elif not dry_run and not ingest:
         logger.info(
             "Done. Ingest with: poetry run python scripts/ingest_an_legacy.py --dir %s",
             dest_dir,
@@ -179,10 +214,15 @@ def main() -> None:
         action="store_true",
         help="Show what would be downloaded without fetching",
     )
+    parser.add_argument(
+        "--ingest",
+        action="store_true",
+        help="Ingest downloaded archives into PostgreSQL immediately after download",
+    )
     args = parser.parse_args()
 
     legislatures = [args.legislature] if args.legislature else available
-    run(dest_dir=args.dir, legislatures=legislatures, dry_run=args.dry_run)
+    run(dest_dir=args.dir, legislatures=legislatures, dry_run=args.dry_run, ingest=args.ingest)
 
 
 if __name__ == "__main__":

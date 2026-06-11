@@ -10,6 +10,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+import requests
 from api.questions import router as questions_router
 from api.state import AppState, set_state
 from fastapi import FastAPI, HTTPException
@@ -27,6 +28,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not settings.albert_api_key:
         raise RuntimeError("ALBERT_API_KEY environment variable is not set.")
 
+    http = requests.Session()
+    http.headers["User-Agent"] = "qe-api/1.0"
     set_state(
         AppState(
             vector_store=PgvectorClient(),
@@ -35,10 +38,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 model=settings.albert_rerank_model,
                 api_key=settings.albert_api_key,
             ),
+            http=http,
         )
     )
     yield
     set_state(None)
+    http.close()
 
 
 app = FastAPI(

@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import requests
+
 from qe.clients.rerank import RerankClient
 from qe.clients.vector_store import VectorStore
+
 
 @dataclass
 class AppState:
     vector_store: VectorStore
     reranker: RerankClient
+    http: requests.Session
 
 
 _state: AppState | None = None

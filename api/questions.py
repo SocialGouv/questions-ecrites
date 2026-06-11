@@ -5,8 +5,12 @@ from __future__ import annotations
 import logging
 import math
 import statistics
+from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.orm import Session, load_only
 
 from api.state import _get_state
 from qe.assignment import (
@@ -15,8 +19,12 @@ from qe.assignment import (
     rerank_candidates,
     retrieve_candidates,
 )
+from qe.db import get_session
 from qe.hashing import stable_question_point_id
+from qe.ingestion_an import ingest_questions
+from qe.models import Question
 from qe.office_ingestion import OFFICE_COLLECTION
+from qe.question_fetch import fetch_question
 
 logger = logging.getLogger(__name__)
 
@@ -420,3 +428,128 @@ def get_similar(
     ]
 
     return {"question_id": question_id, "collection": collection, "hits": hits}
+
+
+# ---------------------------------------------------------------------------
+# GET /{question_id} — on-demand question metadata with auto-fetch
+# ---------------------------------------------------------------------------
+
+_RESPONSE_COLS = (
+    Question.id,
+    Question.source,
+    Question.legislature,
+    Question.numero_question,
+    Question.etat_question,
+    Question.objet,
+    Question.titre_senat,
+    Question.texte_question,
+    Question.auteur_nom,
+    Question.auteur_prenom,
+    Question.ministre_depot_libelle,
+    Question.date_publication_jo,
+)
+
+
+def _fetch_question(session: Session, question_id: str) -> Question | None:
+    return session.scalar(
+        select(Question)
+        .where(Question.id == question_id)
+        .options(load_only(*_RESPONSE_COLS))
+    )
+
+
+class QuestionResponse(BaseModel):
+    id: str
+    source: str
+    legislature: int
+    numero_question: int
+    etat_question: str
+    objet: str | None
+    titre_senat: str | None
+    texte_question: str
+    auteur_nom: str | None
+    auteur_prenom: str | None
+    ministre_libelle: str | None
+    date_publication_jo: date | None
+    fetched_now: bool
+
+
+def _question_to_response(row: Question, *, fetched_now: bool) -> QuestionResponse:
+    return QuestionResponse(
+        id=row.id,
+        source=row.source,
+        legislature=row.legislature,
+        numero_question=row.numero_question,
+        etat_question=row.etat_question,
+        objet=row.objet,
+        titre_senat=row.titre_senat,
+        texte_question=row.texte_question,
+        auteur_nom=row.auteur_nom,
+        auteur_prenom=row.auteur_prenom,
+        ministre_libelle=row.ministre_depot_libelle,
+        date_publication_jo=row.date_publication_jo,
+        fetched_now=fetched_now,
+    )
+
+
+@router.get("/{question_id}", response_model=QuestionResponse)
+def get_question(question_id: str) -> QuestionResponse:
+    """Return metadata for a single question.
+
+    Checks the database first.  For Sénat questions absent from the database,
+    the Sénat website is scraped and the result is upserted (``fetched_now=true``).
+    AN questions are only available through the daily bulk archive refresh
+    (``scripts/download_an_legacy.py --ingest``).
+
+    Args:
+        question_id: Composite question ID, e.g. ``AN-17-QE-15535``.
+
+    Returns:
+        Question metadata.  ``fetched_now`` is true when a Sénat question was
+        not in the database and was fetched on this request.
+
+    Raises:
+        400: The question ID format is not recognised.
+        404: The question is not in the database (and cannot be fetched
+            individually for AN questions).
+    """
+    with get_session() as session:
+        row: Question | None = _fetch_question(session, question_id)
+
+    if row is not None:
+        return _question_to_response(row, fetched_now=False)
+
+    # AN questions are not individually fetchable — only the bulk archive can
+    # populate them.
+    if question_id.upper().startswith("AN-"):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Question '{question_id}' not found in the database. "
+                "AN questions are updated via the daily bulk archive refresh; "
+                "run scripts/download_an_legacy.py --legislature 17 --ingest."
+            ),
+        )
+
+    # For Sénat, try scraping the question page.
+    state = _get_state()
+    try:
+        parsed = fetch_question(question_id, state.http)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if parsed is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Question '{question_id}' not found at the upstream source.",
+        )
+
+    ingest_questions([parsed], ingest_source="ws_polling")
+
+    with get_session() as session:
+        row = _fetch_question(session, parsed.id)
+
+    if row is None:
+        raise HTTPException(status_code=500, detail="Ingest succeeded but row not found.")
+
+    return _question_to_response(row, fetched_now=True)
