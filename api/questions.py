@@ -110,7 +110,7 @@ def _to_relevance(agg_score: float, pool_scores: list[float]) -> float:
 def get_attributions(
     question_id: str,
     top_k: int = 3,
-    directions: list[str] = Query(default=[]),
+    office_ids: list[str] = Query(default=[]),
 ) -> dict:
     """Return the top-N office attribution suggestions for a question.
 
@@ -121,7 +121,10 @@ def get_attributions(
     Args:
         question_id: Composite question ID, e.g. ``AN-17-QE-12345``.
         top_k: Number of office suggestions to return (default 3).
-        directions: Optional list of ministerial directions to filter the search
+        office_ids: Optional list of office codes to restrict the search
+            (e.g. ``["SD1/1A", "SD2/2B"]``).  Callers that filter by
+            top-level direction should resolve direction → office codes
+            before calling this endpoint.
 
     Returns:
         A dict with ``question_id`` and an ``attributions`` list sorted by
@@ -161,17 +164,17 @@ def get_attributions(
 
     # 2. Search the office_responsibilities collection using the stored vector
     #    (no embedding call needed).
-    direction_filter: dict | None = None
-    if directions:
-        direction_filter = {
-            "must": [{"key": "direction", "match": {"any": directions}}]
+    office_filter: dict | None = None
+    if office_ids:
+        office_filter = {
+            "must": [{"key": "office_id", "match": {"any": office_ids}}]
         }
     candidates = retrieve_candidates(
         precomputed_vectors=[vector],
         vector_store=state.vector_store,
         collection=OFFICE_COLLECTION,
         top_k=20,
-        query_filter=direction_filter,
+        query_filter=office_filter,
     )
 
     # 3. Rerank candidates against the question text.
