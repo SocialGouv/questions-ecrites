@@ -309,10 +309,11 @@ def ingest_questions(
                         insert_stmt.excluded.objet,
                         literal_column("questions.objet"),
                     ),
-                    # Response field: take incoming if set, preserve existing otherwise.
+                    # Preserve existing reponse_id — once set it should not be
+                    # overwritten by a re-ingest (guards against ID format drift).
                     "reponse_id": func.coalesce(
-                        insert_stmt.excluded.reponse_id,
                         _existing["reponse_id"],
+                        insert_stmt.excluded.reponse_id,
                     ),
                     # SENAT-specific / enrichment fields: prefer existing non-NULL
                     # value so that WS-polling enrichment is not lost on re-ingest.
@@ -485,18 +486,14 @@ def _parse_an_question_element(  # noqa: C901
         except ValueError:
             pass
 
-    # Use JO date + page as reponse_id so questions that received the same
-    # joint response (same JO publication page) share a reponse_id.
-    # Falls back to a per-question synthetic key only when page data is absent.
+    # Use the question ID directly as the response ID (1-per-question mapping).
+    # The date+page-based scheme (AN-YYYYMMDD-page) grouped questions by JO
+    # publication date alone, creating false allotissement clusters.
     reponse_id: str | None = None
     no_publication: str | None = None
     if texte_reponse:
-        if date_reponse and page_reponse_jo is not None:
-            no_publication = date_reponse.strftime("%Y%m%d")
-            reponse_id = f"AN-{no_publication}-{page_reponse_jo}"
-        else:
-            reponse_id = f"AN-LEGACY-{qid}"
-            no_publication = "LEGACY"
+        reponse_id = qid
+        no_publication = "QE"
 
     return ParsedQuestion(
         id=qid,
