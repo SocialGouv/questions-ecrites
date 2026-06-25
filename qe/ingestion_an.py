@@ -451,6 +451,9 @@ def _parse_an_question_element(  # noqa: C901
     #   1. <teteAnalyse>                       (present on all formats)
     #   2. <analyses><analyse>…</analyse>…</   (modern format, XVI–XVII)
     #   3. <ANALYSE><ANA>…</ANA>…</ANALYSE>    (legacy uppercase format)
+    #   4. <rubrique>                          (broad topic — last-resort
+    #                                           fallback so the question
+    #                                           never ends up with a blank title)
     #
     # Without step 2, ~18 700 AN XVI and ~6 750 AN XVII questions end up
     # with objet=NULL because their teteAnalyse is empty and the legacy
@@ -463,6 +466,7 @@ def _parse_an_question_element(  # noqa: C901
             _t(idx, "teteAnalyse")
             or _t(idx, "analyses", "analyse")
             or _t(idx, "ANALYSE", "ANA")
+            or _t(idx, "rubrique")
         )
 
     # Response
