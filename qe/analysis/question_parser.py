@@ -201,14 +201,16 @@ def parse(text: str) -> ParsedQuestion:
     # négligeable.
     is_rappel = bool(RE_RAPPEL.search(text))
 
-    # 2. Contexte
-    contexte: str | None = None
+    # 2. Ouverture — on récupère la position de départ du sujet abordé
+    # (juste après "attire l'attention de X sur"). Sert de borne gauche
+    # pour le contexte.
+    contexte_start: int | None = None
     opener_label: str | None = None
     head = text[:OPENER_HEAD_CHARS]
     for label, pat in OPENERS:
         m = pat.search(head)
         if m:
-            contexte = _clean(m.group("contexte"))
+            contexte_start = m.start("contexte")
             opener_label = label
             break
 
@@ -224,8 +226,21 @@ def parse(text: str) -> ParsedQuestion:
             closer_label = label
 
     question: str | None = None
+    question_abs_start: int | None = None
     if earliest_start is not None:
-        question = _clean(text[tail_offset + earliest_start:])
+        question_abs_start = tail_offset + earliest_start
+        question = _clean(text[question_abs_start:])
+
+    # 4. Contexte — tout ce qui se trouve entre l'ouverture et la question.
+    # Comprend le sujet abordé (première phrase après "sur/concernant/…")
+    # ET le corps qui suit ("Tout le secteur est en effet…", stats, ancrages
+    # locaux, etc.). Si aucune question de clôture n'a été détectée, on
+    # prend jusqu'à la fin — c'est mieux que rien à afficher.
+    contexte: str | None = None
+    if contexte_start is not None:
+        end = question_abs_start if question_abs_start is not None else len(text)
+        raw = text[contexte_start:end]
+        contexte = _clean(raw) or None
 
     return ParsedQuestion(
         est_rappel=is_rappel,
