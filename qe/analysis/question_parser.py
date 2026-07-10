@@ -201,16 +201,13 @@ def parse(text: str) -> ParsedQuestion:
     # négligeable.
     is_rappel = bool(RE_RAPPEL.search(text))
 
-    # 2. Ouverture — on récupère la position de départ du sujet abordé
-    # (juste après "attire l'attention de X sur"). Sert de borne gauche
-    # pour le contexte.
-    contexte_start: int | None = None
+    # 2. Ouverture — sert uniquement à produire `opener_label` (stats /
+    # debug). Le contexte lui-même part du début du texte, pour ne rien
+    # perdre du préambule ("M./Mme X interroge Mme la ministre de …").
     opener_label: str | None = None
     head = text[:OPENER_HEAD_CHARS]
     for label, pat in OPENERS:
-        m = pat.search(head)
-        if m:
-            contexte_start = m.start("contexte")
+        if pat.search(head):
             opener_label = label
             break
 
@@ -231,16 +228,15 @@ def parse(text: str) -> ParsedQuestion:
         question_abs_start = tail_offset + earliest_start
         question = _clean(text[question_abs_start:])
 
-    # 4. Contexte — tout ce qui se trouve entre l'ouverture et la question.
-    # Comprend le sujet abordé (première phrase après "sur/concernant/…")
-    # ET le corps qui suit ("Tout le secteur est en effet…", stats, ancrages
-    # locaux, etc.). Si aucune question de clôture n'a été détectée, on
-    # prend jusqu'à la fin — c'est mieux que rien à afficher.
+    # 4. Contexte — tout ce qui précède la question, sans crop. Le split
+    # entier reconstitue le texte original (aux espaces près) : c'est ce
+    # que l'UI affiche comme sections "Contexte" et "Question", sans
+    # bouton "voir le texte complet" quand les deux sont peuplés.
+    # Si aucun verbe de clôture n'est trouvé, on laisse contexte à None
+    # et l'UI se replie sur le texte brut.
     contexte: str | None = None
-    if contexte_start is not None:
-        end = question_abs_start if question_abs_start is not None else len(text)
-        raw = text[contexte_start:end]
-        contexte = _clean(raw) or None
+    if question_abs_start is not None and question_abs_start > 0:
+        contexte = _clean(text[:question_abs_start]) or None
 
     return ParsedQuestion(
         est_rappel=is_rappel,
