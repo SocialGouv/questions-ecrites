@@ -18,6 +18,7 @@ Sans `--commit`, le script montre ce qu'il ferait sans toucher à la base.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import Iterator
 
@@ -27,7 +28,9 @@ import psycopg2.extras
 from qe.analysis.question_parser import ParsedQuestion, parse
 
 
-DATABASE_URL = "postgresql://qe:qe@localhost:5433/qe"
+# Read from env; the fallback is the local dev DSN documented in the README.
+# Any deployment sets DATABASE_URL to point at its own Postgres.
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://qe:qe@localhost:5433/qe")
 
 
 UPDATE_SQL = """
@@ -55,13 +58,15 @@ def _fetch(cur, *, ids: list[str], backfill: bool, all_rows: bool, limit: int | 
             "ORDER BY date_publication_jo DESC NULLS LAST"
         )
         if limit:
-            q += f" LIMIT {limit}"
-        cur.execute(q)
+            cur.execute(q + " LIMIT %s", (limit,))
+        else:
+            cur.execute(q)
     elif all_rows:
         q = "SELECT id, texte_question FROM questions WHERE texte_question IS NOT NULL"
         if limit:
-            q += f" LIMIT {limit}"
-        cur.execute(q)
+            cur.execute(q + " LIMIT %s", (limit,))
+        else:
+            cur.execute(q)
     else:
         raise SystemExit("Choisir --id, --backfill ou --all")
 
@@ -117,10 +122,14 @@ def main() -> None:
         ):
             parsed = parse(texte)
             stats["total"] += 1
-            if parsed.est_rappel: stats["rappels"] += 1
-            if parsed.contexte_extrait: stats["topic"] += 1
-            if parsed.question_extraite: stats["question"] += 1
-            if parsed.contexte_extrait and parsed.question_extraite: stats["both"] += 1
+            if parsed.est_rappel:
+                stats["rappels"] += 1
+            if parsed.contexte_extrait:
+                stats["topic"] += 1
+            if parsed.question_extraite:
+                stats["question"] += 1
+            if parsed.contexte_extrait and parsed.question_extraite:
+                stats["both"] += 1
 
             if args.commit:
                 batch.append({

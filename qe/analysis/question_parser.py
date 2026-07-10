@@ -6,7 +6,7 @@ Une QE typique a 3 parties :
     [Question, 200-500 c]   « Il/elle lui demande / souhaite savoir… »
 
 Ce module est PUR — pas de DB, pas de fichier, pas de I/O. Il expose une
-fonction `parse(text, objet)` qui renvoie un `ParsedQuestion`.
+fonction `parse(text)` qui renvoie un `ParsedQuestion`.
 
 Les patterns sont des constantes du module : facile à ajouter/modifier une
 formulation sans toucher au reste.
@@ -195,8 +195,11 @@ def parse(text: str) -> ParsedQuestion:
     if not text or not text.strip():
         return ParsedQuestion(False, None, None, None, None)
 
-    # 1. Détection rappel
-    is_rappel = bool(RE_RAPPEL.search(text[:OPENER_HEAD_CHARS]))
+    # 1. Détection rappel — on cherche dans TOUT le texte pour ne pas
+    # louper une relance qui commencerait par un court préambule (date,
+    # référence). Les rappels sont eux-mêmes courts, donc le coût est
+    # négligeable.
+    is_rappel = bool(RE_RAPPEL.search(text))
 
     # 2. Contexte
     contexte: str | None = None
