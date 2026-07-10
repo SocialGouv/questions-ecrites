@@ -120,8 +120,8 @@ def test_pattern_aux_fins_de_connaitre_as_opener() -> None:
 def test_pattern_souhaite_attirer_attention_as_opener() -> None:
     text = (
         "M. Paul Bernard souhaite attirer l'attention de Mme la ministre "
-        "sur la pénurie de médicaments. Aussi souhaiterait-il connaître "
-        "les mesures envisagées."
+        "sur la pénurie de médicaments. Il lui demande quelles mesures "
+        "sont envisagées."
     )
     p = parse(text)
     assert p.opener_label == "souhaite attirer/appeler l'attention"
@@ -193,18 +193,30 @@ def test_contexte_spans_full_body_between_opener_and_question() -> None:
     assert p.question_extraite.startswith("Elle lui demande")
 
 
-def test_contexte_without_closer_reaches_end_of_text() -> None:
-    # Si aucune question de clôture n'est détectée, le contexte va
-    # jusqu'à la fin du texte (mieux que rien).
+def test_contexte_without_closer_is_null() -> None:
+    # Sans verbe de clôture on ne peut pas splitter le texte en deux :
+    # contexte est laissé à None et l'UI se replie sur le texte brut.
+    text = "M. X interroge Mme Y sur un sujet. Corps du texte sans clôture."
+    p = parse(text)
+    assert p.question_extraite is None
+    assert p.contexte_extrait is None
+
+
+def test_contexte_and_question_reconstruct_the_full_text() -> None:
+    # Contexte + question = texte complet (aux espaces près). C'est ce
+    # qui permet à l'UI de masquer le bouton "Voir le texte complet".
     text = (
-        "Mme Chose interroge Mme la ministre sur un sujet. "
-        "Corps du texte. Encore un peu de corps."
+        "Mme Chose interroge Mme la ministre sur la situation X. "
+        "Corps intermédiaire. "
+        "Elle lui demande donc quelles mesures seront prises."
     )
     p = parse(text)
     assert p.contexte_extrait is not None
-    assert "un sujet" in p.contexte_extrait
-    assert "Corps du texte" in p.contexte_extrait
-    assert p.question_extraite is None
+    assert p.question_extraite is not None
+    # Le préambule complet est présent dans le contexte, pas cropé
+    assert p.contexte_extrait.startswith("Mme Chose interroge")
+    # Rien de la question dans le contexte
+    assert "Elle lui demande" not in p.contexte_extrait
 
 
 def test_rappel_with_preamble_is_still_detected() -> None:
