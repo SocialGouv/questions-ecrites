@@ -172,6 +172,41 @@ def test_short_text_below_tail_window() -> None:
     assert p.question_extraite.startswith("Il lui demande")
 
 
+def test_contexte_spans_full_body_between_opener_and_question() -> None:
+    # contexte_extrait doit couvrir TOUT ce qui est entre l'ouverture et
+    # la question — pas seulement la première phrase après "sur".
+    text = (
+        "Mme Chose interroge Mme la ministre sur la situation X. "
+        "Contexte phrase deux. Contexte phrase trois. Contexte phrase quatre. "
+        "Elle lui demande donc quelles mesures seront prises."
+    )
+    p = parse(text)
+    assert p.contexte_extrait is not None
+    # première phrase capturée
+    assert "situation X" in p.contexte_extrait
+    # ET le corps intermédiaire
+    assert "phrase deux" in p.contexte_extrait
+    assert "phrase quatre" in p.contexte_extrait
+    # la question elle-même ne doit PAS être dans le contexte
+    assert "Elle lui demande" not in p.contexte_extrait
+    assert p.question_extraite is not None
+    assert p.question_extraite.startswith("Elle lui demande")
+
+
+def test_contexte_without_closer_reaches_end_of_text() -> None:
+    # Si aucune question de clôture n'est détectée, le contexte va
+    # jusqu'à la fin du texte (mieux que rien).
+    text = (
+        "Mme Chose interroge Mme la ministre sur un sujet. "
+        "Corps du texte. Encore un peu de corps."
+    )
+    p = parse(text)
+    assert p.contexte_extrait is not None
+    assert "un sujet" in p.contexte_extrait
+    assert "Corps du texte" in p.contexte_extrait
+    assert p.question_extraite is None
+
+
 def test_rappel_with_preamble_is_still_detected() -> None:
     # A rappel that starts with a short preamble (date, ref) must still be
     # caught — regression guard for the widened RE_RAPPEL search scope.
