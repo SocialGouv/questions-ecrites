@@ -29,9 +29,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 
 @dataclass(frozen=True)
@@ -89,11 +92,20 @@ def _fmt_diff(diff: float, use_color: bool) -> str:
 def _fmt_row(cells: list[str], widths: list[int]) -> str:
     padded = []
     for cell, w in zip(cells, widths, strict=True):
-        # Right-align numeric-looking cells (contain digits + " " + [.,%])
-        if any(c.isdigit() for c in cell) and cell.strip("+- —").replace(".", "").replace(",", "").isdigit() or cell.startswith(("+", "-")) and any(c.isdigit() for c in cell):
-            padded.append(cell.rjust(w))
-        else:
-            padded.append(cell.ljust(w))
+        # Strip ANSI codes first — otherwise "\033[32m+0.075\033[0m"
+        # starts with '\033' instead of '+' and never matches, and
+        # `str.rjust` counts the escape bytes as visible characters.
+        bare = _ANSI_RE.sub("", cell)
+        is_numeric = (
+            bare.strip("+- ").replace(".", "").replace(",", "").isdigit()
+            and any(c.isdigit() for c in bare)
+        ) or (
+            bare.startswith(("+", "-")) and any(c.isdigit() for c in bare)
+        )
+        # Compute padding on the visible length so ANSI-coloured cells
+        # still line up with plain ones.
+        pad = max(0, w - len(bare))
+        padded.append((" " * pad) + cell if is_numeric else cell + (" " * pad))
     return "| " + " | ".join(padded) + " |"
 
 
@@ -153,19 +165,10 @@ def main() -> None:
             "-" if v is baseline else _fmt_diff(diff, use_color),
         ])
 
-    # Compute column widths (strip ANSI codes for width calc).
+    # Compute column widths on the ANSI-stripped text (same pattern as
+    # `_fmt_row` uses for numeric detection).
     def _visible_len(s: str) -> int:
-        i, out = 0, 0
-        while i < len(s):
-            if s[i] == "\033":
-                # skip ANSI escape until 'm'
-                while i < len(s) and s[i] != "m":
-                    i += 1
-                i += 1
-                continue
-            out += 1
-            i += 1
-        return out
+        return len(_ANSI_RE.sub("", s))
 
     widths = [max(_visible_len(r[c]) for r in rows) for c in range(len(header))]
 
