@@ -28,9 +28,14 @@ from typing import Iterable
 # ---------------------------------------------------------------------------
 # NB: [’''] tolère les apostrophes courbes ou droites des exports JO.
 
-# Rappel administratif (n'est pas une nouvelle question).
+# Rappel administratif (n'est pas une nouvelle question). La borne
+# `.{1,300}?` évite le backtracking catastrophique en DOTALL : sur un
+# texte de 2500 chars où "rappelle à" apparaît sans "les termes de sa
+# question", un `.+?` non borné explorerait chaque position avant
+# d'échouer. En pratique le nom du ministre + le connecteur tiennent
+# largement dans 300 caractères.
 RE_RAPPEL = re.compile(
-    r"\brappelle\s+à\s+.+?\bles\s+termes\s+de\s+sa\s+question\b",
+    r"\brappelle\s+à\s+.{1,300}?\bles\s+termes\s+de\s+sa\s+question\b",
     re.IGNORECASE | re.DOTALL,
 )
 
