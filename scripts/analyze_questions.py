@@ -35,7 +35,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://qe:qe@localhost:5433
 
 UPDATE_SQL = """
 UPDATE questions
-SET contexte_extrait     = %(contexte)s,
+SET contexte_extrait  = %(contexte)s,
     question_extraite = %(question)s,
     est_rappel        = %(est_rappel)s,
     analyzed_at       = NOW()
