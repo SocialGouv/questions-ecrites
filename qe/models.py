@@ -319,6 +319,20 @@ class QuestionsOpendataVec(Base):
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
 
 
+class QuestionsExperimentsVec(Base):
+    """Vector table dedicated to A/B embedding experiments — separate from
+    the production `vec_questions_opendata` so tests don't corrupt live
+    similarity results. The current variant is recorded per row in the
+    payload's `variant_tag` field so several variants can coexist and be
+    filtered at eval time.
+    """
+    __tablename__ = "vec_questions_experiments"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    vector: Mapped[list] = mapped_column(Vector(_VECTOR_DIM), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+
+
 class AnswersOpendataVec(Base):
     __tablename__ = "vec_answers_opendata"
 

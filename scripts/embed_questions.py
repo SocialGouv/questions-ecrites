@@ -133,6 +133,7 @@ class EmbedConfig:
     rate_limit: int | None  # max API calls per minute; None = unlimited
     text_source: str  # one of TEXT_SOURCES — picks which field to embed
     skip_rappels: bool  # drop rows where est_rappel = TRUE (bruit dans l'index)
+    variant_tag: str | None  # label recorded in payload for A/B filtering
 
 
 def _parse_args() -> EmbedConfig:
@@ -224,10 +225,44 @@ def _parse_args() -> EmbedConfig:
             "is noise in the similarity index."
         ),
     )
+    parser.add_argument(
+        "--variant-tag",
+        default=None,
+        metavar="TAG",
+        help=(
+            "Label stored in each point's payload as `variant_tag`. Only "
+            "useful when writing to the shared experiments collection "
+            "(`--collection questions_experiments`) — lets multiple A/B "
+            "variants coexist in the same table and be filtered at eval "
+            "time. Ignored otherwise but harmless."
+        ),
+    )
+    parser.add_argument(
+        "--embedding-provider",
+        choices=("pliage", "albert"),
+        default="pliage",
+        help=(
+            "Which service to call for embeddings. `pliage` (default) uses "
+            "the internal gateway at LLM_BASE_URL (`ia.social.gouv.fr`) — "
+            "IP-whitelisted, only reachable from the office wifi. `albert` "
+            "uses Albert Etalab's public API "
+            "(https://albert.api.etalab.gouv.fr) — reachable from anywhere. "
+            "Same BGE-M3 model behind both, so vectors are compatible; "
+            "picks the matching API key automatically."
+        ),
+    )
     args = parser.parse_args()
 
     settings = get_settings()
-    api_key = require_api_key("PLIAGE_API_KEY")
+    # Resolve the embedding endpoint + credential according to the provider.
+    # `--embedding-provider albert` forces the Etalab public URL regardless
+    # of settings.embeddings_url (which defaults to PLIAGE via LLM_BASE_URL).
+    if args.embedding_provider == "albert":
+        api_key = require_api_key("ALBERT_API_KEY")
+        embeddings_url = f"{settings.albert_base_url.rstrip('/')}/v1/embeddings"
+    else:
+        api_key = require_api_key("PLIAGE_API_KEY")
+        embeddings_url = settings.embeddings_url
 
     def _parse_date(val: str | None, flag: str) -> date | None:
         if val is None:
@@ -240,7 +275,7 @@ def _parse_args() -> EmbedConfig:
     return EmbedConfig(
         collection=args.collection,
         embedding_model=args.embedding_model or settings.embedding_model,
-        embeddings_url=settings.embeddings_url,
+        embeddings_url=embeddings_url,
         api_key=api_key,
         filter_status=args.filter_status,
         ministry=args.ministry,
@@ -252,6 +287,7 @@ def _parse_args() -> EmbedConfig:
         rate_limit=args.rate_limit,
         text_source=args.text_source,
         skip_rappels=args.skip_rappels,
+        variant_tag=args.variant_tag,
     )
 
 
@@ -354,6 +390,7 @@ def embed_questions(  # noqa: C901
     rate_limiter: TokenBucketRateLimiter | None = None,
     text_source: str = "texte_question",
     skip_rappels: bool = False,
+    variant_tag: str | None = None,
 ) -> None:
     """Embed all matching questions from PostgreSQL into pgvector.
 
@@ -489,6 +526,10 @@ def embed_questions(  # noqa: C901
                             # forces a re-embedding of every row.
                             "text_source": text_source,
                             "content_hash": _content_hash(text),
+                            # Present only when the caller passes --variant-tag,
+                            # so we don't pollute the payload of non-experiment
+                            # collections.
+                            **({"variant_tag": variant_tag} if variant_tag else {}),
                             "etat_question": question.etat_question,
                             "source": question.source,
                             "legislature": question.legislature,
@@ -547,6 +588,7 @@ def main() -> None:
         rate_limiter=rate_limiter,
         text_source=config.text_source,
         skip_rappels=config.skip_rappels,
+        variant_tag=config.variant_tag,
     )
 
 

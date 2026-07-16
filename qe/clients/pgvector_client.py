@@ -30,6 +30,7 @@ from qe import db
 from qe.models import (
     AnswersOpendataVec,
     OfficeResponsibilitiesVec,
+    QuestionsExperimentsVec,
     QuestionsOpendataVec,
 )
 
@@ -37,6 +38,8 @@ _COLLECTION_MAP = {
     "office_responsibilities": OfficeResponsibilitiesVec,
     "questions_opendata": QuestionsOpendataVec,
     "answers_opendata": AnswersOpendataVec,
+    # A/B embedding experiments — variants distinguished by payload.variant_tag
+    "questions_experiments": QuestionsExperimentsVec,
 }
 
 
