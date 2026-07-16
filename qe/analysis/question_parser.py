@@ -41,7 +41,19 @@ OPENER_HEAD_CHARS = 600
 # majuscule (nouvelle phrase), ou fin de texte. `\s+` sous DOTALL absorbe
 # aussi les `\r\n` qu'on trouve fréquemment dans les exports JO.
 _CTX_END = r"(?=\.\s+[A-ZÀ-Ý]|\.\s*$|\.\Z)"
-_CONNECTORS = r"(?:sur|concernant|au\s+sujet\s+de|à\s+propos\s+de|quant\s+à|relative(?:ment)?\s+à|relatifs?\s+à)"
+# Chaque connecteur doit pouvoir absorber une contraction avec article
+# ("au sujet DU", "à propos DES", "quant AU", "relative AUX"). On garde
+# le connecteur lui-même compact et on liste les formes contractées.
+_CONNECTORS = (
+    r"(?:"
+    r"sur|concernant"
+    r"|au\s+sujet\s+d(?:e|u|es|['’])"
+    r"|à\s+propos\s+d(?:e|u|es|['’])"
+    r"|quant\s+(?:à|au|aux)"
+    r"|relative(?:ment)?\s+(?:à|au|aux)"
+    r"|relatifs?\s+(?:à|au|aux)"
+    r")"
+)
 
 OPENERS: list[tuple[str, re.Pattern[str]]] = [
     # Variantes autour de "attention"
@@ -117,30 +129,40 @@ OPENERS: list[tuple[str, re.Pattern[str]]] = [
 # la plus PRÉCOCE (pour attraper le début de la vraie question, pas ses
 # éventuelles répétitions).
 CLOSER_TAIL_CHARS = 900
+# Pronom objet optionnel entre le sujet et le verbe :
+#   "il lui demande", "il le prie", "il la remercie", "elle l'interroge",
+#   "il se demande", etc. Toléré partout — évite de dupliquer chaque motif.
+# NB : les élisions ("l'invite") n'ont pas d'espace après l'apostrophe,
+# donc on les traite séparément.
+_OBJ = r"(?:(?:lui|se|le|la|leur|les)\s+|l['’])?"
+
 CLOSERS: list[tuple[str, re.Pattern[str]]] = [
     # Verbes de demande — pronom + verbe conjugué
     ("il/elle demande",
-     re.compile(r"\b(?:il|elle)\s+(?:lui\s+|se\s+)?demande(?:ra|rait)?\b", re.IGNORECASE)),
+     re.compile(rf"\b(?:il|elle)\s+{_OBJ}demande(?:ra|rait)?\b", re.IGNORECASE)),
     ("il/elle souhaite",
      re.compile(r"\b(?:il|elle)\s+souhait(?:e|erait|ait|erais)\b", re.IGNORECASE)),
-    ("il/elle voudrait/aimerait",
-     re.compile(r"\b(?:il|elle)\s+(?:voudrait|aimerait|prie|sollicite)\b", re.IGNORECASE)),
+    ("il/elle voudrait/aimerait/prie",
+     re.compile(rf"\b(?:il|elle)\s+{_OBJ}(?:voudrait|aimerait|prie|sollicite)\b", re.IGNORECASE)),
     ("il/elle interroge",
-     re.compile(r"\b(?:il|elle)\s+(?:l['’])?interroge\b", re.IGNORECASE)),
+     re.compile(rf"\b(?:il|elle)\s+{_OBJ}interroge\b", re.IGNORECASE)),
     ("il/elle remercie",
-     re.compile(r"\b(?:il|elle)\s+(?:la|le)?\s*remercie\b", re.IGNORECASE)),
-    ("il/elle propose/attend",
-     re.compile(r"\b(?:il|elle)\s+(?:lui\s+)?(?:propose|attend)\b", re.IGNORECASE)),
-    # Formes inversées : « souhaite-t-elle », « souhaiterait-il », « pourrait-il »
-    ("inversion souhaite/pourrait/aimerait -t-il/elle",
+     re.compile(rf"\b(?:il|elle)\s+{_OBJ}remercie\b", re.IGNORECASE)),
+    ("il/elle propose/attend/invite/appelle",
+     re.compile(rf"\b(?:il|elle)\s+{_OBJ}(?:propose|attend|invite|appelle)\b", re.IGNORECASE)),
+    # Formes inversées : « souhaite-t-elle », « souhaiterait-il », « demande-t-elle », « prie-t-il »
+    # Le `t` de liaison est optionnel : présent quand le verbe finit par une
+    # voyelle ("souhaite-t-il"), absent quand il finit déjà par t
+    # ("souhaiterait-il", "voudrait-il", "pourrait-il").
+    ("inversion souhaite/demande/pourrait -t-il/elle",
      re.compile(
-         r"\b(?:souhait(?:e|erait|ait)|voudrait|aimerait|pourrait|entend|envisage|compte)"
-         r"[-\s]t[-\s](?:il|elle)\b",
+         r"\b(?:demande|souhait(?:e|erait|ait)|voudrait|aimerait|pourrait|prie|entend|envisage|compte|remercie|invite|appelle)"
+         r"[-\s](?:t[-\s])?(?:il|elle)\b",
          re.IGNORECASE,
      )),
     # Ouvertures de sous-question tardive
     ("aussi/enfin, …",
-     re.compile(r"\b(?:aussi|enfin)[,\s]+(?:qu[ei]|comment|dans|il|elle|le\s+ministre)\b", re.IGNORECASE)),
+     re.compile(r"\b(?:aussi|enfin)[,\s]+(?:qu[ei]|comment|dans|il|elle|le\s+ministre|lui)\b", re.IGNORECASE)),
     # Interrogatives fréquentes en fin
     ("que compte/comptent",
      re.compile(r"\bqu[ei]\s+compt(?:e|ent)[-\s]t[-\s](?:il|elle|ils|elles)\b", re.IGNORECASE)),
@@ -183,6 +205,18 @@ def _clean(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+# Certains textes du corpus ont été ingérés avec des séquences d'échappement
+# LITTÉRALES au lieu de vrais CR/LF (le texte contient `\` + `r` + `\` + `n`
+# comme 4 caractères visibles, pas les codes 13/10). Ces caractères parasites
+# tuent les word boundaries des regex : `\bIl` ne matche pas dans `n\rIl`
+# parce qu'il n'y a pas de frontière entre `n` (lettre) et `I` (lettre).
+# On les convertit en espace avant tout matching.
+_ESCAPE_SEQ_RE = re.compile(r"\\[rnt]")
+
+def _normalize(text: str) -> str:
+    return _ESCAPE_SEQ_RE.sub(" ", text)
+
+
 # ---------------------------------------------------------------------------
 # API publique
 # ---------------------------------------------------------------------------
@@ -194,6 +228,10 @@ def parse(text: str) -> ParsedQuestion:
     """
     if not text or not text.strip():
         return ParsedQuestion(False, None, None, None, None)
+
+    # Normalise les séquences d'échappement littérales du corpus qui, sinon,
+    # cassent les word boundaries des regex.
+    text = _normalize(text)
 
     # 1. Détection rappel — on cherche dans TOUT le texte pour ne pas
     # louper une relance qui commencerait par un court préambule (date,

@@ -219,6 +219,39 @@ def test_contexte_and_question_reconstruct_the_full_text() -> None:
     assert "Elle lui demande" not in p.contexte_extrait
 
 
+def test_literal_escape_sequences_are_normalized() -> None:
+    # Some rows were ingested with the 4-char sequence "\r\n" instead of
+    # actual CR/LF. Without normalisation, `\bIl` fails after `\n`
+    # because 'n' and 'I' are both word chars and there is no boundary
+    # between them, so the closer regex never matches.
+    text = (
+        "M. Jean-François Husson attire l'attention de Mme la ministre "
+        "au sujet du financement des espaces.\\r\\n\\r\\nLa loi ceci cela. "
+        "Corps du texte.\\r\\n\\r\\nIl souhaite donc savoir comment le "
+        "Gouvernement justifie ce transfert."
+    )
+    p = parse(text)
+    assert p.opener_label == "attire/appelle l'attention"
+    assert p.closer_label == "il/elle souhaite"
+    assert p.contexte_extrait is not None
+    assert "financement des espaces" in p.contexte_extrait
+    assert p.question_extraite is not None
+    assert p.question_extraite.startswith("Il souhaite donc savoir")
+
+
+def test_contracted_connectors_match() -> None:
+    # "au sujet du" (contraction de + le) must match — same for
+    # "à propos des", "quant au", "relative aux".
+    for connector in ("au sujet du", "à propos des", "quant au", "relative aux"):
+        text = (
+            f"M. X attire l'attention de Mme Y {connector} sujet précis. "
+            "Il lui demande son avis."
+        )
+        p = parse(text)
+        assert p.contexte_extrait is not None, f"failed on connector={connector!r}"
+        assert p.question_extraite is not None, f"failed on connector={connector!r}"
+
+
 def test_rappel_with_preamble_is_still_detected() -> None:
     # A rappel that starts with a short preamble (date, ref) must still be
     # caught — regression guard for the widened RE_RAPPEL search scope.
