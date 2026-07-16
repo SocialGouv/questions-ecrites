@@ -148,15 +148,26 @@ CLOSERS: list[tuple[str, re.Pattern[str]]] = [
      re.compile(rf"\b(?:il|elle)\s+{_OBJ}interroge\b", re.IGNORECASE)),
     ("il/elle remercie",
      re.compile(rf"\b(?:il|elle)\s+{_OBJ}remercie\b", re.IGNORECASE)),
-    ("il/elle propose/attend/invite/appelle",
-     re.compile(rf"\b(?:il|elle)\s+{_OBJ}(?:propose|attend|invite|appelle)\b", re.IGNORECASE)),
+    ("il/elle propose/attend/invite/appelle/interpelle",
+     re.compile(rf"\b(?:il|elle)\s+{_OBJ}(?:propose|attend|invite|appelle|interpelle)\b", re.IGNORECASE)),
+    # Passif impersonnel : "il est demandé au Gouvernement de…" ou
+    # "il lui est demandé quelles sanctions…". Rare mais récurrent dans
+    # les questions rédigées à la voix passive.
+    ("il est demandé",
+     re.compile(r"\bil\s+(?:lui\s+|leur\s+)?est\s+(?:donc\s+)?demandé\b", re.IGNORECASE)),
+    # "il/elle alerte …" — verbe d'alerte en clôture, symétrique de son
+    # usage en ouverture. Ex: "C'est pourquoi il l'alerte sur…"
+    ("il/elle alerte",
+     re.compile(rf"\b(?:il|elle)\s+{_OBJ}alerte\b", re.IGNORECASE)),
     # Formes inversées : « souhaite-t-elle », « souhaiterait-il », « demande-t-elle », « prie-t-il »
     # Le `t` de liaison est optionnel : présent quand le verbe finit par une
     # voyelle ("souhaite-t-il"), absent quand il finit déjà par t
-    # ("souhaiterait-il", "voudrait-il", "pourrait-il").
+    # ("souhaiterait-il", "voudrait-il", "pourrait-il"). Un pronom objet
+    # peut précéder le verbe : "Aussi l'interroge-t-il" → object=l', verb=interroge.
     ("inversion souhaite/demande/pourrait -t-il/elle",
      re.compile(
-         r"\b(?:demande|souhait(?:e|erait|ait)|voudrait|aimerait|pourrait|prie|entend|envisage|compte|remercie|invite|appelle)"
+         r"\b(?:l['’]|le\s+|la\s+|les\s+|lui\s+|leur\s+)?"
+         r"(?:demande|souhait(?:e|erait|ait)|voudrait|aimerait|pourrait|peut|prie|entend|envisage|compte|remercie|invite|appelle|interroge|interpelle)"
          r"[-\s](?:t[-\s])?(?:il|elle)\b",
          re.IGNORECASE,
      )),
