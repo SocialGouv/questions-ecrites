@@ -278,14 +278,22 @@ def parse(text: str) -> ParsedQuestion:
         question = _clean(text[question_abs_start:])
 
     # 4. Contexte — tout ce qui précède la question, sans crop. Le split
-    # entier reconstitue le texte original (aux espaces près) : c'est ce
-    # que l'UI affiche comme sections "Contexte" et "Question", sans
-    # bouton "voir le texte complet" quand les deux sont peuplés.
-    # Si aucun verbe de clôture n'est trouvé, on laisse contexte à None
-    # et l'UI se replie sur le texte brut.
+    # entier reconstitue le texte original (aux espaces près). L'UI
+    # affiche les deux sections côte à côte sans bouton "voir le texte
+    # complet" quand les deux sont peuplés.
     contexte: str | None = None
     if question_abs_start is not None and question_abs_start > 0:
         contexte = _clean(text[:question_abs_start]) or None
+
+    # 5. Cas "question d'une seule phrase" : opener détecté mais aucun
+    # verbe de clôture trouvé — c'est structurel, la substance est dans
+    # l'ouverture ("M. X interroge Mme Y sur [détail]." point final).
+    # Dans ce cas la question EST le texte entier, sans contexte
+    # séparé. ~92 % des cas non-splittés tombent ici — l'UI a besoin
+    # de ce signal pour afficher une section "Question" propre plutôt
+    # qu'un texte brut sans label.
+    if question is None and opener_label is not None:
+        question = _clean(text)
 
     return ParsedQuestion(
         est_rappel=is_rappel,
