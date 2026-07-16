@@ -35,8 +35,11 @@ RE_RAPPEL = re.compile(
 )
 
 # Ouvertures — chaque pattern DOIT exposer un groupe nommé `contexte`.
-# On les cherche dans les 600 premiers caractères.
-OPENER_HEAD_CHARS = 600
+# On cherche dans les 1500 premiers caractères : suffisant pour couvrir
+# les phrases d'ouverture les plus longues (titres ministériels
+# à rallonge + sujet énuméré), sans faire matcher un opener planté dans
+# le corps du texte, qui donnerait un contexte incohérent.
+OPENER_HEAD_CHARS = 1500
 # La partie contexte se termine sur : point suivi d'un caractère blanc puis
 # majuscule (nouvelle phrase), ou fin de texte. `\s+` sous DOTALL absorbe
 # aussi les `\r\n` qu'on trouve fréquemment dans les exports JO.
@@ -110,6 +113,14 @@ OPENERS: list[tuple[str, re.Pattern[str]]] = [
         "demande à … de",
         re.compile(
             rf"\bdemande\s+à\s+.+?\bde\s+"
+            rf"(?P<contexte>.+?){_CTX_END}",
+            re.IGNORECASE | re.DOTALL,
+        ),
+    ),
+    (
+        "prie … de",
+        re.compile(
+            rf"\bprie\s+.+?\bde\s+"
             rf"(?P<contexte>.+?){_CTX_END}",
             re.IGNORECASE | re.DOTALL,
         ),
