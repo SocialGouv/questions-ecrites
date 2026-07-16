@@ -193,13 +193,28 @@ def test_contexte_spans_full_body_between_opener_and_question() -> None:
     assert p.question_extraite.startswith("Elle lui demande")
 
 
-def test_contexte_without_closer_is_null() -> None:
-    # Sans verbe de clôture on ne peut pas splitter le texte en deux :
-    # contexte est laissé à None et l'UI se replie sur le texte brut.
+def test_single_sentence_question_when_no_closer() -> None:
+    # Sans verbe de clôture on ne peut pas splitter — mais si un opener
+    # a matché, on considère que la substance EST dans l'ouverture et
+    # `question_extraite` prend tout le texte. Contexte reste None : il
+    # n'y a pas de corps distinct de la question.
     text = "M. X interroge Mme Y sur un sujet. Corps du texte sans clôture."
     p = parse(text)
-    assert p.question_extraite is None
     assert p.contexte_extrait is None
+    assert p.question_extraite is not None
+    assert p.question_extraite.startswith("M. X interroge")
+    assert "Corps du texte" in p.question_extraite
+
+
+def test_no_opener_no_closer_returns_nulls() -> None:
+    # Si même l'ouverture n'est pas détectée (texte vraiment atypique),
+    # on laisse tout à None et l'UI se replie sur le texte brut.
+    text = "Ceci est un texte quelconque sans structure de QE."
+    p = parse(text)
+    assert p.opener_label is None
+    assert p.closer_label is None
+    assert p.contexte_extrait is None
+    assert p.question_extraite is None
 
 
 def test_contexte_and_question_reconstruct_the_full_text() -> None:
