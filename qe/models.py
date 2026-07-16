@@ -176,6 +176,18 @@ class Question(Base):
     # --- textes ---
     texte_question: Mapped[str] = mapped_column(Text, nullable=False)
 
+    # --- décomposition régex (peuplée par scripts/analyze_questions.py) ---
+    # Voir qe/analysis/question_parser.py pour la logique d'extraction.
+    # NULL = pas encore analysée OU l'analyseur n'a pas su découper.
+    contexte_extrait: Mapped[str | None] = mapped_column(Text, nullable=True)
+    question_extraite: Mapped[str | None] = mapped_column(Text, nullable=True)
+    est_rappel: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
+    analyzed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # --- réponse (None tant que EN_COURS) ---
     reponse_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("reponses.id"), nullable=True

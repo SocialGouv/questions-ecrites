@@ -25,10 +25,22 @@ Performance:
     --rate-limit N      max API calls per minute; omit for no limit
 
 Usage:
-    # Questions for social ministries (cohésion sociale), unanswered only
-    poetry run python scripts/embed_questions.py --ministry "cohésion sociale" --filter-status EN_COURS
+    # Baseline (existing behaviour)
+    poetry run python scripts/embed_questions.py
 
-    # Current legislature, Assemblée Nationale only, rate-limited
+    # A/B: embed only the question_extraite in a separate collection
+    poetry run python scripts/embed_questions.py \\
+        --text-source question_extraite \\
+        --skip-rappels \\
+        --collection questions_opendata_q_only
+
+    # A/B: contexte-only for attribution eval
+    poetry run python scripts/embed_questions.py \\
+        --text-source contexte_extrait \\
+        --skip-rappels \\
+        --collection questions_opendata_ctx_only
+
+    # Filters: current legislature, Assemblée Nationale only, rate-limited
     poetry run python scripts/embed_questions.py --source AN --legislature 17 --rate-limit 60
 
 Requires:
@@ -69,6 +81,41 @@ logger = logging.getLogger(__name__)
 DEFAULT_COLLECTION = "questions_opendata"
 DEFAULT_BATCH_SIZE = 32
 
+# Text source options for --text-source. Every value falls back to
+# `texte_question` when the primary field is NULL (row not yet analysed
+# by the regex parser, or parser failed on this row). This guarantees
+# every row still gets a vector — no silent gaps in the index.
+#
+#   texte_question       : baseline — the raw JO text (current behaviour)
+#   question_extraite    : only the closing demand ("Il lui demande…")
+#   contexte_extrait     : only the context body ("attire l'attention…")
+#   contexte_and_question: contexte + " " + question (drops opener boilerplate)
+TEXT_SOURCES = (
+    "texte_question",
+    "question_extraite",
+    "contexte_extrait",
+    "contexte_and_question",
+)
+
+
+def _select_text(question: Question, text_source: str) -> str | None:
+    """Pick the text to embed according to `text_source`.
+
+    Always returns `texte_question` when the primary field is NULL so
+    the row still gets a vector — the alternative is a corpus with
+    silent gaps that would fail every recall test on those rows.
+    """
+    if text_source == "texte_question":
+        return question.texte_question
+    if text_source == "question_extraite":
+        return question.question_extraite or question.texte_question
+    if text_source == "contexte_extrait":
+        return question.contexte_extrait or question.texte_question
+    if text_source == "contexte_and_question":
+        parts = [p for p in (question.contexte_extrait, question.question_extraite) if p]
+        return " ".join(parts) if parts else question.texte_question
+    raise ValueError(f"unknown text_source: {text_source!r}")
+
 
 @dataclass(frozen=True)
 class EmbedConfig:
@@ -84,6 +131,8 @@ class EmbedConfig:
     date_to: date | None  # date_publication_jo <= this date
     batch_size: int  # questions per embedding API call
     rate_limit: int | None  # max API calls per minute; None = unlimited
+    text_source: str  # one of TEXT_SOURCES — picks which field to embed
+    skip_rappels: bool  # drop rows where est_rappel = TRUE (bruit dans l'index)
 
 
 def _parse_args() -> EmbedConfig:
@@ -155,6 +204,26 @@ def _parse_args() -> EmbedConfig:
         metavar="N",
         help="Maximum embedding API calls per minute. Omit for no rate limiting.",
     )
+    parser.add_argument(
+        "--text-source",
+        choices=TEXT_SOURCES,
+        default="texte_question",
+        help=(
+            "Which text to embed: texte_question (raw JO, baseline), "
+            "question_extraite (closing demand only), contexte_extrait "
+            "(context body only), or contexte_and_question (both, drops "
+            "the opener boilerplate). Falls back to texte_question when "
+            "the primary field is NULL."
+        ),
+    )
+    parser.add_argument(
+        "--skip-rappels",
+        action="store_true",
+        help=(
+            "Skip rows where est_rappel = TRUE — their generic wording "
+            "is noise in the similarity index."
+        ),
+    )
     args = parser.parse_args()
 
     settings = get_settings()
@@ -181,6 +250,8 @@ def _parse_args() -> EmbedConfig:
         date_to=_parse_date(args.date_to, "--date-to"),
         batch_size=args.batch_size,
         rate_limit=args.rate_limit,
+        text_source=args.text_source,
+        skip_rappels=args.skip_rappels,
     )
 
 
@@ -201,6 +272,7 @@ def _load_questions(
     legislature: int | None,
     date_from: date | None,
     date_to: date | None,
+    skip_rappels: bool = False,
 ) -> list[Question]:
     """Fetch questions from PostgreSQL, applying all active filters."""
     stmt = select(Question)
@@ -222,6 +294,9 @@ def _load_questions(
 
     if date_to is not None:
         stmt = stmt.where(Question.date_publication_jo <= date_to)
+
+    if skip_rappels:
+        stmt = stmt.where(Question.est_rappel.is_(False))
 
     with db.get_session() as session:
         return list(session.execute(stmt).scalars().all())
@@ -277,6 +352,8 @@ def embed_questions(  # noqa: C901
     date_to: date | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     rate_limiter: TokenBucketRateLimiter | None = None,
+    text_source: str = "texte_question",
+    skip_rappels: bool = False,
 ) -> None:
     """Embed all matching questions from PostgreSQL into pgvector.
 
@@ -299,7 +376,8 @@ def embed_questions(  # noqa: C901
         rate_limiter: Optional global rate limiter (API calls/min).
     """
     questions = _load_questions(
-        filter_status, ministry, source, legislature, date_from, date_to
+        filter_status, ministry, source, legislature, date_from, date_to,
+        skip_rappels=skip_rappels,
     )
     if not questions:
         logger.warning(
@@ -336,10 +414,10 @@ def embed_questions(  # noqa: C901
     empty = 0
 
     for q in questions:
-        text = q.texte_question
+        text = _select_text(q, text_source)
         if not text or not text.strip():
             empty += 1
-            logger.debug("Skipping empty question %s.", q.id)
+            logger.debug("Skipping empty question %s (text_source=%s).", q.id, text_source)
             continue
         cached = existing.get(q.id)
         if cached is not None:
@@ -361,7 +439,7 @@ def embed_questions(  # noqa: C901
         return
 
     # --- Probe first batch to get vector dimension, create collection if needed ---
-    first_batch_texts = [q.texte_question for q in to_embed[:batch_size]]
+    first_batch_texts = [_select_text(q, text_source) for q in to_embed[:batch_size]]
     if rate_limiter:
         rate_limiter.acquire(1)
     logger.info(
@@ -381,7 +459,7 @@ def embed_questions(  # noqa: C901
 
     with tqdm(total=len(to_embed), unit="q", desc="Embedding") as progress:
         for batch_idx, batch in enumerate(batches):
-            texts = [q.texte_question for q in batch]
+            texts = [_select_text(q, text_source) for q in batch]
 
             # Use pre-computed embeddings for the first batch.
             if batch_idx == 0:
@@ -392,13 +470,12 @@ def embed_questions(  # noqa: C901
                 embeddings = embedder.embed_batch(texts)
 
             points = []
-            for question, embedding in zip(batch, embeddings, strict=True):
+            for question, embedding, text in zip(batch, embeddings, texts, strict=True):
                 date_str = (
                     question.date_publication_jo.isoformat()
                     if question.date_publication_jo
                     else None
                 )
-                text = question.texte_question
                 points.append(
                     {
                         "id": _question_point_id(question.id),
@@ -407,6 +484,10 @@ def embed_questions(  # noqa: C901
                             "kind": "question",
                             "question_id": question.id,
                             "embedding_model": embedding_model,
+                            # `text_source` and `content_hash` together
+                            # form the cache key: switching the source
+                            # forces a re-embedding of every row.
+                            "text_source": text_source,
                             "content_hash": _content_hash(text),
                             "etat_question": question.etat_question,
                             "source": question.source,
@@ -464,6 +545,8 @@ def main() -> None:
         date_to=config.date_to,
         batch_size=config.batch_size,
         rate_limiter=rate_limiter,
+        text_source=config.text_source,
+        skip_rappels=config.skip_rappels,
     )
 
 
