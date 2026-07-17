@@ -147,15 +147,23 @@ def _fetch_all_vectors(
 # ---------------------------------------------------------------------------
 
 
-def _load_sibling_groups() -> list[tuple[str, list[str]]]:
-    """Return [(reponse_id, [question_id, ...]), ...] for groups with >= 2 questions."""
+def _load_sibling_groups(
+    legislature: int | None = None,
+) -> list[tuple[str, list[str]]]:
+    """Return [(reponse_id, [question_id, ...]), ...] for groups with >= 2 questions.
+
+    When `legislature` is set, every question in the group must belong to
+    that legislature — otherwise the recall metric gets biased down by
+    siblings whose vector is missing from the collection under test.
+    """
     with db.get_session() as session:
         stmt = (
             select(Question.reponse_id, func.array_agg(Question.id))
             .where(Question.reponse_id.is_not(None))
-            .group_by(Question.reponse_id)
-            .having(func.count() >= 2)
         )
+        if legislature is not None:
+            stmt = stmt.where(Question.legislature == legislature)
+        stmt = stmt.group_by(Question.reponse_id).having(func.count() >= 2)
         rows = session.execute(stmt).all()
     return [(row[0], row[1]) for row in rows]
 
@@ -204,6 +212,16 @@ def main() -> None:  # noqa: C901
         default=DEFAULT_NUM_FAILURES,
         help="Number of failure cases to include in the report.",
     )
+    parser.add_argument(
+        "--legislature",
+        type=int,
+        default=None,
+        help=(
+            "Restrict ground-truth sibling groups to a single legislature. "
+            "Useful when the collection under test only holds a subset of "
+            "the corpus (pilot batch)."
+        ),
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
 
@@ -212,8 +230,11 @@ def main() -> None:  # noqa: C901
     # ------------------------------------------------------------------
     # 1. Load ground truth from PostgreSQL
     # ------------------------------------------------------------------
-    logger.info("Loading sibling groups from PostgreSQL...")
-    all_groups = _load_sibling_groups()
+    logger.info(
+        "Loading sibling groups from PostgreSQL%s...",
+        f" (legislature={args.legislature})" if args.legislature else "",
+    )
+    all_groups = _load_sibling_groups(legislature=args.legislature)
     logger.info("  Found %d groups with >= 2 questions.", len(all_groups))
 
     # ------------------------------------------------------------------
@@ -378,7 +399,11 @@ def main() -> None:  # noqa: C901
     }
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    # Force UTF-8 — Windows default is cp1252 and would silently mangle
+    # non-ASCII characters in the failures dump, breaking `json.load` later.
+    args.output.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     logger.info("Report written to %s", args.output)
 
 

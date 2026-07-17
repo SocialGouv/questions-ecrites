@@ -134,6 +134,7 @@ class EmbedConfig:
     text_source: str  # one of TEXT_SOURCES — picks which field to embed
     skip_rappels: bool  # drop rows where est_rappel = TRUE (bruit dans l'index)
     variant_tag: str | None  # label recorded in payload for A/B filtering
+    only_gt: bool  # restrict to eval ground-truth questions (~80k instead of ~260k)
 
 
 def _parse_args() -> EmbedConfig:
@@ -226,6 +227,15 @@ def _parse_args() -> EmbedConfig:
         ),
     )
     parser.add_argument(
+        "--only-gt",
+        action="store_true",
+        help=(
+            "Embed only questions present in one of the eval ground-truth "
+            "sets (allotissement siblings or attribution labels). ~80k "
+            "questions instead of ~260k — cuts A/B batch time by ~4x."
+        ),
+    )
+    parser.add_argument(
         "--variant-tag",
         default=None,
         metavar="TAG",
@@ -288,12 +298,21 @@ def _parse_args() -> EmbedConfig:
         text_source=args.text_source,
         skip_rappels=args.skip_rappels,
         variant_tag=args.variant_tag,
+        only_gt=args.only_gt,
     )
 
 
-def _question_point_id(question_id: str) -> str:
-    """Deterministic UUID derived from the question's string ID."""
-    digest = hashlib.sha256(question_id.encode("utf-8")).hexdigest()
+def _question_point_id(question_id: str, variant_tag: str | None = None) -> str:
+    """Deterministic UUID derived from the question's string ID.
+
+    When `variant_tag` is set, it's mixed into the hash so multiple
+    variants of the same question can coexist in a shared collection
+    (`vec_questions_experiments`) without overwriting each other.
+    Baseline runs (no variant) keep the original id scheme, so the
+    production `vec_questions_opendata` table stays compatible.
+    """
+    key = f"{question_id}::{variant_tag}" if variant_tag else question_id
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
     return str(UUID(digest[:32]))
 
 
@@ -309,6 +328,7 @@ def _load_questions(
     date_from: date | None,
     date_to: date | None,
     skip_rappels: bool = False,
+    only_gt: bool = False,
 ) -> list[Question]:
     """Fetch questions from PostgreSQL, applying all active filters."""
     stmt = select(Question)
@@ -333,6 +353,29 @@ def _load_questions(
 
     if skip_rappels:
         stmt = stmt.where(Question.est_rappel.is_(False))
+
+    if only_gt:
+        # Only rows in the ground truth for one of the eval modules :
+        #   - allotissement: reponse_id shared by >= 2 questions
+        #   - attribution : has a direction_reelle_id in question_attributions
+        # EXISTS subqueries are ~50× faster than the aggregate-based
+        # version on our index layout (avoids the HAVING scan).
+        from sqlalchemy import text as _sa_text, or_
+        stmt = stmt.where(
+            or_(
+                _sa_text(
+                    "EXISTS(SELECT 1 FROM questions q2 "
+                    "  WHERE q2.reponse_id = questions.reponse_id "
+                    "    AND q2.id <> questions.id) "
+                    "AND questions.reponse_id IS NOT NULL"
+                ),
+                _sa_text(
+                    "EXISTS(SELECT 1 FROM question_attributions qa "
+                    "  WHERE qa.question_id = questions.id "
+                    "    AND qa.direction_reelle_id IS NOT NULL)"
+                ),
+            )
+        )
 
     with db.get_session() as session:
         return list(session.execute(stmt).scalars().all())
@@ -391,6 +434,7 @@ def embed_questions(  # noqa: C901
     text_source: str = "texte_question",
     skip_rappels: bool = False,
     variant_tag: str | None = None,
+    only_gt: bool = False,
 ) -> None:
     """Embed all matching questions from PostgreSQL into pgvector.
 
@@ -415,6 +459,7 @@ def embed_questions(  # noqa: C901
     questions = _load_questions(
         filter_status, ministry, source, legislature, date_from, date_to,
         skip_rappels=skip_rappels,
+        only_gt=only_gt,
     )
     if not questions:
         logger.warning(
@@ -515,7 +560,7 @@ def embed_questions(  # noqa: C901
                 )
                 points.append(
                     {
-                        "id": _question_point_id(question.id),
+                        "id": _question_point_id(question.id, variant_tag),
                         "vector": embedding,
                         "payload": {
                             "kind": "question",
