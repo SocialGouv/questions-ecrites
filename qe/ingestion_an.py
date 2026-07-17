@@ -490,14 +490,23 @@ def _parse_an_question_element(  # noqa: C901
         except ValueError:
             pass
 
-    # Use the question ID directly as the response ID (1-per-question mapping).
-    # The date+page-based scheme (AN-YYYYMMDD-page) grouped questions by JO
-    # publication date alone, creating false allotissement clusters.
+    # Real allotissement = questions answered on the SAME JO page in the
+    # SAME publication. We identify that by (date_reponse_jo, page_reponse_jo)
+    # — both extracted from the archive above. When either is missing we
+    # fall back to per-question ids (keeps the row importable but the
+    # question stays out of any allotment cluster). Previous scheme used
+    # date-only, which grouped unrelated questions published on the same
+    # day; adding the page eliminates that false-positive.
     reponse_id: str | None = None
     no_publication: str | None = None
     if texte_reponse:
-        reponse_id = qid
-        no_publication = "QE"
+        if date_reponse and page_reponse_jo:
+            no_publication = date_reponse.strftime("%Y%m%d")
+            reponse_id = f"AN-{no_publication}-{page_reponse_jo}"
+        else:
+            # Fallback — we lose the allotment info but keep the reponse row
+            reponse_id = qid
+            no_publication = "QE"
 
     return ParsedQuestion(
         id=qid,
