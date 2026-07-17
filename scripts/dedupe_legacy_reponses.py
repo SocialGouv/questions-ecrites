@@ -44,27 +44,28 @@ logger = logging.getLogger(__name__)
 
 
 def dedupe(commit: bool) -> None:
+    # `db.get_session()` rolls back on any raised exception (see qe/db.py),
+    # so an interruption between the UPDATE and DELETE below leaves the FK
+    # constraints intact — no dangling `questions.reponse_id` values.
     with db.get_session() as session:
         # ------------------------------------------------------------------
         # 1. Diagnose current state
         # ------------------------------------------------------------------
+        # Group on the full text (same reasoning as the dedup step) and
+        # in a single CTE — avoids scanning `reponses` three times.
         before = session.execute(
             text(
                 """
+                WITH legacy_groups AS (
+                  SELECT texte_reponse, COUNT(*) AS n
+                  FROM reponses WHERE id LIKE 'AN-LEGACY-%%'
+                  GROUP BY texte_reponse
+                  HAVING COUNT(*) >= 2
+                )
                 SELECT
                   (SELECT COUNT(*) FROM reponses WHERE id LIKE 'AN-LEGACY-%%') AS legacy_reponses,
-                  (SELECT COUNT(*) FROM (
-                    SELECT MD5(texte_reponse) AS h, COUNT(*) n
-                    FROM reponses WHERE id LIKE 'AN-LEGACY-%%'
-                    GROUP BY MD5(texte_reponse)
-                    HAVING COUNT(*) >= 2
-                  ) t) AS hidden_groups,
-                  (SELECT SUM(n) FROM (
-                    SELECT COUNT(*) n
-                    FROM reponses WHERE id LIKE 'AN-LEGACY-%%'
-                    GROUP BY MD5(texte_reponse)
-                    HAVING COUNT(*) >= 2
-                  ) t) AS questions_in_hidden_groups
+                  COALESCE((SELECT COUNT(*) FROM legacy_groups), 0) AS hidden_groups,
+                  COALESCE((SELECT SUM(n) FROM legacy_groups), 0) AS questions_in_hidden_groups
                 """
             )
         ).one()
@@ -80,18 +81,23 @@ def dedupe(commit: bool) -> None:
         # contains rows where old_id != canonical_id — the rows that need
         # to be redirected + deleted.
         session.execute(text("DROP TABLE IF EXISTS _legacy_dedup_map"))
+        # Group on `texte_reponse` directly, not on a hash — MD5/SHA
+        # collisions are unlikely but silent when they happen (two
+        # unrelated responses merged and one deleted). Postgres handles
+        # `GROUP BY texte_reponse` on a TEXT column fine ; we're on a
+        # subset of ~138k rows here.
         session.execute(
             text(
                 """
                 CREATE TEMP TABLE _legacy_dedup_map AS
                 WITH canonical AS (
-                  SELECT MD5(texte_reponse) AS text_hash, MIN(id) AS canonical_id
+                  SELECT texte_reponse, MIN(id) AS canonical_id
                   FROM reponses WHERE id LIKE 'AN-LEGACY-%%'
-                  GROUP BY MD5(texte_reponse)
+                  GROUP BY texte_reponse
                 )
                 SELECT r.id AS old_id, c.canonical_id
                 FROM reponses r
-                JOIN canonical c ON MD5(r.texte_reponse) = c.text_hash
+                JOIN canonical c ON r.texte_reponse = c.texte_reponse
                 WHERE r.id LIKE 'AN-LEGACY-%%' AND r.id <> c.canonical_id
                 """
             )
