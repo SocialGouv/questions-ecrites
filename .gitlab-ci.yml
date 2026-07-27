@@ -1,0 +1,52 @@
+# CI PIC questions-ecrites-back : miroir GitHub -> build -> déploiement GitOps.
+stages:
+  - mirror
+  - build
+  - deploy
+
+# Miroir GitHub (source de vérité) -> PIC. Pipeline planifiée (toutes les 10 min).
+mirror:pull:
+  stage: mirror
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache git
+  script:
+    - git clone --bare "https://x-access-token:${GITHUB_MIRROR_TOKEN}@github.com/SocialGouv/questions-ecrites.git" src
+    - cd src
+    - git push --force "https://oauth2:${PIC_PUSH_TOKEN}@pic.sg.social.gouv.fr/socialgouv/data-ia/data-platform/questions-ecrites-back.git" refs/heads/main:refs/heads/main
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+
+build:image:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: overlay2
+  before_script:
+    - echo "$BUILD_PUSH_TOKEN" | docker login "$CI_REGISTRY" -u "$BUILD_PUSH_USER" --password-stdin
+  script:
+    - docker build -t "$CI_REGISTRY_IMAGE:latest" -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" .
+    - docker push "$CI_REGISTRY_IMAGE:latest"
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"
+
+deploy:argocd:
+  stage: deploy
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache git sed
+  script:
+    - git clone --depth 1 "https://oauth2:${ARGO_REPO_TOKEN}@pic.sg.social.gouv.fr/socialgouv/data-ia/data-platform/data-platform-argocd.git"
+    - cd data-platform-argocd
+    - sed -i -E "s|(image. pic-registry.sg.social.gouv.fr/socialgouv/data-ia/data-platform/questions-ecrites-back).*|\1:${CI_COMMIT_SHORT_SHA}|" questions-ecrites/deployment.yaml
+    - git config user.name "ci-questions-ecrites-back"
+    - git config user.email "ci@pic.sg.social.gouv.fr"
+    - git add questions-ecrites/deployment.yaml
+    - git diff --cached --quiet || (git commit -m "questions-ecrites-back:${CI_COMMIT_SHORT_SHA}" && git push origin main)
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"
