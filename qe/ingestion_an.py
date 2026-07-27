@@ -24,6 +24,7 @@ Key conventions:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import zipfile
@@ -490,19 +491,31 @@ def _parse_an_question_element(  # noqa: C901
         except ValueError:
             pass
 
-    # Real allotissement = questions answered on the SAME JO page in the
-    # SAME publication. We identify that by (date_reponse_jo, page_reponse_jo)
-    # — both extracted from the archive above. When either is missing we
-    # fall back to per-question ids (keeps the row importable but the
-    # question stays out of any allotment cluster). Previous scheme used
-    # date-only, which grouped unrelated questions published on the same
-    # day; adding the page eliminates that false-positive.
+    # Real allotissement = questions answered with EXACTLY the same
+    # response text in the same JO issue. That's how the JO PDF itself
+    # signals grouped questions (asterisks on author names in the PDF
+    # table of contents).
+    #
+    # Cross-checked against `jo_anq_202310.pdf` (JO 2023-03-07):
+    # - QE5369 (obligation vaccinale, isolated in PDF, no asterisk):
+    #     sha1(texte_reponse)[:12] = "28e7763b91e3"
+    # - QE5690, 5834, 5835, 5839, 5843 (5 kiné questions with asterisks):
+    #     sha1(texte_reponse)[:12] = "9a145bd90f27" (all identical)
+    # Two questions share a reponse_id iff their texte_reponse hash and
+    # date_reponse_jo both match — exactly the JO's own grouping rule.
+    #
+    # WARNING: the previous scheme `AN-{date}-{page_reponse_jo}` was broken
+    # because `pageJO` in the XML is the starting page of the "Réponses"
+    # section of the whole JO issue, NOT the individual response page —
+    # so all QE from the same JO issue got the same page and were falsely
+    # grouped into massive fake allotments.
     reponse_id: str | None = None
     no_publication: str | None = None
     if texte_reponse:
-        if date_reponse and page_reponse_jo:
+        if date_reponse:
             no_publication = date_reponse.strftime("%Y%m%d")
-            reponse_id = f"AN-{no_publication}-{page_reponse_jo}"
+            text_hash = hashlib.sha1(texte_reponse.encode("utf-8")).hexdigest()[:12]
+            reponse_id = f"AN-{no_publication}-{text_hash}"
         else:
             # Fallback — we lose the allotment info but keep the reponse row
             reponse_id = qid
