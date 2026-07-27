@@ -192,9 +192,18 @@ class Question(Base):
     # Filled by a backfill batch + write-behind from the attribution
     # module. Read priority is `question_attributions.direction_reelle_id`
     # first, this only as fallback. See docs/rapport_performance_v2.md.
+    #
+    # No `relationship()` here because the `directions` table lives in
+    # the qe-front repo (its schema and CRUD are owned there). The FK
+    # constraint holds at the DB level; Python code that needs the
+    # direction row queries it explicitly rather than lazy-loading it.
     direction_algo_id: Mapped[int | None] = mapped_column(
         Integer,
-        ForeignKey("directions.id", ondelete="SET NULL"),
+        ForeignKey(
+            "directions.id",
+            name="fk_questions_direction_algo_id",
+            ondelete="SET NULL",
+        ),
         nullable=True,
         index=True,
     )

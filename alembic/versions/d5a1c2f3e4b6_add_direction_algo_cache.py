@@ -37,12 +37,18 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # Nullable — most questions will be NULL until the backfill runs.
+    # FK constraint is explicitly named so re-runs don't create silent
+    # duplicates and downgrade() knows what to drop.
     op.add_column(
         "questions",
         sa.Column(
             "direction_algo_id",
             sa.Integer(),
-            sa.ForeignKey("directions.id", ondelete="SET NULL"),
+            sa.ForeignKey(
+                "directions.id",
+                name="fk_questions_direction_algo_id",
+                ondelete="SET NULL",
+            ),
             nullable=True,
         ),
     )
@@ -54,14 +60,15 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
-    # Index for the filter predicate used by the "similar questions" query.
-    # Small direction table (~15 rows) → partial index is unnecessary; a
-    # plain btree on the FK is enough and helps both single-direction
-    # lookups and multi-direction IN () filters.
+    # Partial index — skip the ~260k NULL rows we'll have between the
+    # migration and the first backfill run. The filter predicate we
+    # care about is always `direction_algo_id = X` (or IN (…)), so NULL
+    # rows in the index are pure overhead.
     op.create_index(
         "ix_questions_direction_algo_id",
         "questions",
         ["direction_algo_id"],
+        postgresql_where=sa.text("direction_algo_id IS NOT NULL"),
     )
 
 
