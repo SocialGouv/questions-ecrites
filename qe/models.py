@@ -188,6 +188,20 @@ class Question(Base):
     )
     date_retrait: Mapped[date | None] = mapped_column(Date, nullable=True)
 
+    # --- direction cache algo (last top-1 from kNN attribution) ---
+    # Filled by a backfill batch + write-behind from the attribution
+    # module. Read priority is `question_attributions.direction_reelle_id`
+    # first, this only as fallback. See docs/rapport_performance_v2.md.
+    direction_algo_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("directions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    direction_algo_computed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # --- méta ingestion ---
     ingest_source: Mapped[str] = mapped_column(
         Text, nullable=False
