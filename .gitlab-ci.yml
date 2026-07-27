@@ -17,21 +17,27 @@ mirror:pull:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
 
+# kaniko (docker:dind bloque par le proxy Skyhigh) + flags anti-OOM
+# (deps Python ML lourdes, meme cas que code-amelio backend).
 build:image:
   stage: build
-  image: docker:24
-  services:
-    - docker:24-dind
-  variables:
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
-    DOCKER_DRIVER: overlay2
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
   before_script:
-    - echo "$BUILD_PUSH_TOKEN" | docker login "$CI_REGISTRY" -u "$BUILD_PUSH_USER" --password-stdin
+    - mkdir -p /kaniko/.docker
+    - AUTH=$(printf "%s:%s" "$BUILD_PUSH_USER" "$BUILD_PUSH_TOKEN" | base64 | tr -d '\n')
+    - printf '{"auths":{"%s":{"auth":"%s"}}}' "$CI_REGISTRY" "$AUTH" > /kaniko/.docker/config.json
   script:
-    - docker build -t "$CI_REGISTRY_IMAGE:latest" -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" .
-    - docker push "$CI_REGISTRY_IMAGE:latest"
-    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+    - /kaniko/executor
+        --context "$CI_PROJECT_DIR"
+        --dockerfile "$CI_PROJECT_DIR/Dockerfile"
+        --destination "$CI_REGISTRY_IMAGE:latest"
+        --destination "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+        --snapshot-mode=redo
+        --use-new-run
+        --compressed-caching=false
+        --single-snapshot
   rules:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"
 
