@@ -122,6 +122,45 @@ plein de QE **déjà répondues** au moment où la source arrivait. Résultat :
 le hit@20 sous-estimait la vraie performance de ~14 pts (78 % vs
 92 %). Corrigé dans `scripts/eval_realistic_encours.py`.
 
+## Perf par législature — le chiffre agrégé cache des écarts importants
+
+Le 91.9 % hit@20 mesuré sur un sample all-random de 500 groupes est
+**arithmétiquement biaisé vers les vieilles legs** — plus de groupes
+au total et groupes plus gros (leg 14 max = 291 QE dans un même
+allotment). Éval par législature (150 groupes/leg, `--legislature`
+sur `scripts/eval_realistic_encours.py`) :
+
+| Législature | n_queries | hit@1 | hit@3 | hit@5 | hit@10 | hit@20 |
+|---|---:|---:|---:|---:|---:|---:|
+| **14** | 632 | **54.4 %** | **76.9 %** | 80.9 % | 86.7 % | **90.5 %** |
+| **15** | 662 | **55.4 %** | 75.5 % | 82.2 % | 85.7 % | 87.3 % |
+| **16** | 483 | 37.5 % | 68.1 % | 75.6 % | 85.3 % | 87.8 % |
+| **17** | 405 | 36.1 % | 62.0 % | 70.4 % | 81.7 % | 87.9 % |
+
+**Deux gradients qui parlent** :
+
+1. **hit@1 chute de 55 % (leg 14) à 36 % (leg 17)** — presque −20 pts.
+   Legs anciennes = questions courtes, souvent stéréotypées (députés
+   d'un même groupe recopient un texte-type). Matching lexical trivial
+   → hit@1 fort mécaniquement, sans mérite spécial de l'algo. Legs
+   récentes = questions plus longues, plus individualisées, plus de
+   vocabulaire spécifique → hit@1 baisse.
+
+2. **hit@20 baisse peu** (91 → 88 %). L'algo trouve toujours quelque
+   chose de pertinent, mais moins souvent en tête.
+
+**Pourquoi l'agrégé donne 91.9 % au lieu de la moyenne pondérée
+(88.5 %)** : le sample all-random tire naturellement plus de groupes
+issus des legs 14-15 (plus de groupes total, groupes plus gros donc
+plus faciles à "hit" — une source dans un groupe de 200, il suffit de
+trouver 1 des 199 autres). Le sample par-legis normalise à 150
+groupes/leg indépendamment de la taille.
+
+**Chiffre "métier" à retenir** — pour un agent qui traite du leg 17
+aujourd'hui, la perf pertinente est **hit@3 ≈ 62 %, hit@20 ≈ 88 %**.
+Pas 92 %. L'ancien rapport surpondérait des cas triviaux legs 14-15
+qui n'existent plus dans la file quotidienne.
+
 ## Historique des expériences
 
 Ordre chronologique, avec ce qu'on a appris de chaque essai (y compris
