@@ -68,7 +68,7 @@ def upgrade() -> None:
             "extracted_at",
             sa.DateTime(timezone=True),
             nullable=False,
-            server_default=sa.func.now(),
+            server_default=sa.text("NOW()"),
         ),
         sa.ForeignKeyConstraint(["question_id"], ["questions.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(

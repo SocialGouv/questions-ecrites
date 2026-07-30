@@ -120,17 +120,30 @@ def _parse_poste(poste: str) -> tuple[str, str | None, str | None, str | None] |
     return direction, sous_dir, bureau, bureau_full
 
 
+# Legislature is derived from date_jo_question at query time — MIN15 has
+# no `legislature` column, and hard-coding '17' would break silently on
+# any future ingest of MIN14/16 archives. The start-date thresholds
+# match `_LEGISLATURE_START_DATES` in qe/ingestion_an.py.
 SELECT_SQL = sqltext("""
     SELECT
-        e.id                                          AS etape_id,
-        e.parlement || '-17-QE-' || e.numero_question AS question_id,
-        e.poste_etape                                 AS poste,
-        e.type_etape                                  AS type_etape,
-        e.date_debut_etape                            AS date_debut
+        e.id                                                    AS etape_id,
+        e.parlement || '-' || (
+            CASE
+                WHEN e.date_jo_question >= DATE '2024-07-18' THEN 17
+                WHEN e.date_jo_question >= DATE '2022-06-22' THEN 16
+                WHEN e.date_jo_question >= DATE '2017-06-21' THEN 15
+                WHEN e.date_jo_question >= DATE '2012-06-20' THEN 14
+                ELSE 13
+            END
+        ) || '-QE-' || e.numero_question                        AS question_id,
+        e.poste_etape                                           AS poste,
+        e.type_etape                                            AS type_etape,
+        e.date_debut_etape                                      AS date_debut
     FROM reponses_extract_etapes e
     WHERE e.type_etape = ANY(:signal_types)
       AND e.poste_etape IS NOT NULL
       AND e.date_debut_etape IS NOT NULL
+      AND e.date_jo_question IS NOT NULL
     ORDER BY e.date_debut_etape ASC
 """)
 
@@ -159,40 +172,40 @@ def main() -> None:
     args = ap.parse_args()
 
     logger.info("Scanning reponses_extract_etapes …")
-    with db.get_session() as session:
-        rows = session.execute(
-            SELECT_SQL, {"signal_types": list(BUREAU_SIGNAL_TYPES)}
-        ).all()
-    logger.info("Loaded %d bureau-signal step rows", len(rows))
-
-    # For each (qid, direction) keep the latest step (rows are ordered ASC,
-    # so the last one wins by overwrite).
+    # Stream rows via server-side cursor so we don't materialise the whole
+    # result set — safe on tables that may grow to millions of steps.
     latest: dict[tuple[str, str], dict] = {}
     rejected_no_bureau = 0
     rejected_unknown_direction = 0
-    for r in rows:
-        parsed = _parse_poste(r.poste)
-        if parsed is None:
-            segs = _split_poste(r.poste)
-            if len(segs) < 3:
-                rejected_no_bureau += 1
-            else:
-                rejected_unknown_direction += 1
-            continue
-        direction, sd, bur, burf = parsed
-        latest[(r.question_id, direction)] = {
-            "qid": r.question_id,
-            "dir": direction,
-            "sd": sd,
-            "bur": bur,
-            "burf": burf,
-            "eid": r.etape_id,
-            "date_debut": r.date_debut,
-        }
+    n_scanned = 0
+    with db.get_session() as session:
+        stream = session.execute(
+            SELECT_SQL, {"signal_types": list(BUREAU_SIGNAL_TYPES)}
+        ).yield_per(1000)
+        for r in stream:
+            n_scanned += 1
+            parsed = _parse_poste(r.poste)
+            if parsed is None:
+                segs = _split_poste(r.poste)
+                if len(segs) < 3:
+                    rejected_no_bureau += 1
+                else:
+                    rejected_unknown_direction += 1
+                continue
+            direction, sd, bur, burf = parsed
+            latest[(r.question_id, direction)] = {
+                "qid": r.question_id,
+                "dir": direction,
+                "sd": sd,
+                "bur": bur,
+                "burf": burf,
+                "eid": r.etape_id,
+                "date_debut": r.date_debut,
+            }
 
     logger.info(
-        "Kept %d (qid, direction) pairs — rejected %d no-bureau, %d unknown-direction",
-        len(latest), rejected_no_bureau, rejected_unknown_direction,
+        "Scanned %d step rows — kept %d (qid, direction) pairs — rejected %d no-bureau, %d unknown-direction",
+        n_scanned, len(latest), rejected_no_bureau, rejected_unknown_direction,
     )
 
     by_dir = Counter(v["dir"] for v in latest.values())
