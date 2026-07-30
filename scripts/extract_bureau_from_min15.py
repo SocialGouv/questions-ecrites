@@ -63,8 +63,20 @@ KNOWN_DIRECTIONS = {
     "DAJ", "DRH", "DNS", "DREES", "DIPLP", "DARES",
 }
 
-# Match "Pour rédaction" and "Pour rédaction interfacée".
-REDACTION_TYPES = ("Pour rédaction", "Pour rédaction interfacée")
+# Steps that plausibly reveal the bureau in charge.
+#
+# - "Pour attribution" is critical for DSS: their workflow tracks bureau
+#   at attribution time but sends drafting to a central pool. Without
+#   this type, DSS coverage is 31; with it, 1 276.
+# - "Pour rédaction" / "Pour rédaction interfacée" are the natural
+#   signal for DGOS, DGS, DGCS.
+# - "Pour visa" is not included: it's a validation step, often reused
+#   by cross-bureau reviewers, so it's noisier than the two above.
+BUREAU_SIGNAL_TYPES = (
+    "Pour rédaction",
+    "Pour rédaction interfacée",
+    "Pour attribution",
+)
 
 # Some poste_etape have double spaces or trailing spaces around ' - '.
 _SPLIT_RE = re.compile(r"\s+-\s+")
@@ -113,9 +125,10 @@ SELECT_SQL = sqltext("""
         e.id                                          AS etape_id,
         e.parlement || '-17-QE-' || e.numero_question AS question_id,
         e.poste_etape                                 AS poste,
+        e.type_etape                                  AS type_etape,
         e.date_debut_etape                            AS date_debut
     FROM reponses_extract_etapes e
-    WHERE e.type_etape = ANY(:redac_types)
+    WHERE e.type_etape = ANY(:signal_types)
       AND e.poste_etape IS NOT NULL
       AND e.date_debut_etape IS NOT NULL
     ORDER BY e.date_debut_etape ASC
@@ -148,9 +161,9 @@ def main() -> None:
     logger.info("Scanning reponses_extract_etapes …")
     with db.get_session() as session:
         rows = session.execute(
-            SELECT_SQL, {"redac_types": list(REDACTION_TYPES)}
+            SELECT_SQL, {"signal_types": list(BUREAU_SIGNAL_TYPES)}
         ).all()
-    logger.info("Loaded %d 'Pour rédaction' step rows", len(rows))
+    logger.info("Loaded %d bureau-signal step rows", len(rows))
 
     # For each (qid, direction) keep the latest step (rows are ordered ASC,
     # so the last one wins by overwrite).
