@@ -220,6 +220,11 @@ def main() -> None:
     parser.add_argument("--overfetch", type=int, default=DEFAULT_OVERFETCH)
     parser.add_argument("--no-rerank", action="store_true")
     parser.add_argument(
+        "--legislature", type=int, default=None,
+        help="Restrict GT to allotments whose members are all in this AN "
+             "legislature (14/15/16/17). Filters on the AN-<leg>- prefix of qids."
+    )
+    parser.add_argument(
         "--dgcs-csv",
         type=Path,
         default=None,
@@ -279,6 +284,12 @@ def main() -> None:
                     args.dgcs_csv)
     else:
         groups = _load_allotment_groups()
+    if args.legislature is not None:
+        prefix = f"AN-{args.legislature}-QE-"
+        n_before = len(groups)
+        groups = [g for g in groups if all(q.startswith(prefix) for q in g[1])]
+        logger.info("Filtered to leg %d (prefix %r): %d → %d groups",
+                    args.legislature, prefix, n_before, len(groups))
     pub_date, rep_date = _load_meta()
     dir_map: dict[str, int] = {}
     if args.filter_direction:
