@@ -144,6 +144,67 @@ Le seul cas d'écart s'explique par un rôle intermédiaire ("MAJ" =
 mise à jour, probablement un contrôleur ou éditeur), à filtrer plus
 tard côté enrichissement.
 
+## Utiliser MIN15 comme jeu de test indépendant
+
+Idée méthodo : `question_bureau_extract` n'a jamais été vue par l'algo
+d'attribution (le kNN s'entraîne sur `question_attributions`). C'est
+donc un **test set réellement indépendant** — bien mieux que le
+leave-one-out sur les données d'entraînement, qui sous-estime
+systématiquement l'erreur (les QE thématiquement voisines s'aident les
+unes les autres).
+
+### Résultat de l'éval indépendante
+
+Comparaison direction top-1 de `questions.direction_algo_id` (cache
+kNN existant) vs `question_bureau_extract.direction_txt` :
+
+| Périmètre | QE testées | Top-1 correct | % |
+|---|---:|---:|---:|
+| **Filtré** (directions présentes en volume dans le training : DGCS, DSS, DGOS, DGS, DGEFP, DGT) | 2 794 | 2 258 | **80.8 %** |
+| Non filtré (avec DGE, DGCCRF absentes du training) | 3 046 | 2 258 | 74.1 % |
+
+**Détail par direction (périmètre filtré)** :
+
+| Direction MIN15 | QE testées | Match top-1 | % | Signal training |
+|---|---:|---:|---:|---|
+| DGCS | 153 | 147 | **96.1 %** ✅ | 5 925 exemples avec bureau |
+| DSS | 1 275 | 1 032 | **80.9 %** ✓ | 1 011 avec bureau |
+| DGOS | 1 143 | 820 | **71.7 %** ⚠️ | 1 415 direction-only |
+| DGS | 378 | 259 | **68.5 %** ⚠️ | 807 attributions |
+| DGE (hors périmètre) | 199 | 0 | **0 %** ❌ | jamais dans training |
+| DGCCRF (hors périmètre) | 13 | 0 | **0 %** ❌ | jamais dans training |
+
+### Interprétations
+
+1. **L'algo se comporte comme la théorie kNN le prédit** : excellent
+   là où il a beaucoup d'exemples humains (DGCS 96 %), bon avec un
+   peu (DSS 81 %), moyen avec peu et sans bureau (DGOS 72 %), et
+   littéralement nul sans exemple (DGE, DGCCRF à 0 %).
+
+2. **Les 90.4 % top-1 annoncés dans le rapport initial étaient
+   optimistes** : le leave-one-out sur les données d'entraînement
+   sous-estime l'erreur (les QE thématiquement voisines dans le
+   training set s'aident les unes les autres). Sur un jeu réellement
+   indépendant, la perf tombe à **~81 %** — soit **~10 pts de biais
+   d'optimisme** à corriger dans la communication future.
+
+3. **L'algo est très inégal selon la direction** — 96 % DGCS vs 69 %
+   DGS. La moyenne cache un écart de 27 pts. Toute annonce agrégée
+   doit être accompagnée du breakdown par direction.
+
+### Ce que MIN15 pourrait apporter comme training
+
+Injecter `question_bureau_extract` dans le training du kNN :
+
+| Direction | Training actuel (attribs) | + MIN15 | Attendu top-1 après |
+|---|---:|---:|---|
+| DGOS | 1 415 (dir only) | + 1 143 (avec bureau) | 72 % → 82-85 % (estimé) |
+| DGS | 807 | + 378 | 69 % → 78-82 % (estimé) |
+| DSS | 2 064 | + 1 275 (redondant, mais dense) | 81 % → 83-85 % (marginal) |
+| DGCS | 6 326 | + 153 (redondant) | 96 % → 96 % (aucune marge) |
+
+**Levier réel = DGOS et DGS** (+10 à +15 pts top-1 probable).
+
 ## Ce qu'il reste à faire (hors PR #45)
 
 1. **Enrichir le référentiel `bureaux`** avec les bureaux DGOS / DGS /
