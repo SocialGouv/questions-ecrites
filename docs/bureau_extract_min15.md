@@ -205,6 +205,44 @@ Injecter `question_bureau_extract` dans le training du kNN :
 
 **Levier réel = DGOS et DGS** (+10 à +15 pts top-1 probable).
 
+## Éval A/B : intégrer MIN15 dans le training du kNN
+
+Deux évaluations complémentaires, avec un jeu de test = `question_bureau_extract` (n'a jamais été vu par l'algo) :
+
+### Direction (`scripts/eval_direction_with_min15.py`)
+
+Sur 523 requêtes, gain quasi-nul — MIN15 confirme des directions déjà connues par l'algo, pas d'apport :
+
+| Direction | n | baseline | enriched | Delta |
+|---|---:|---:|---:|---:|
+| DSS | 227 | 89.0 % | 89.0 % | 0 |
+| DGOS | 173 | 72.3 % | 76.9 % | +4.6 |
+| DGS | 78 | 74.4 % | 74.4 % | 0 |
+| DGCS | 45 | 100 % | 100 % | 0 |
+| **TOTAL** | 523 | **82.2 %** | **83.7 %** | **+1.5** |
+
+Conclusion : la direction n'a pas besoin de MIN15 — elle est déjà couverte via `direction_reelle_id`. Le seul mouvement (DGOS +4.6 pts) vient de QE MIN15 qui n'avaient pas d'entrée dans `question_attributions`.
+
+### Bureau (`scripts/eval_bureau_with_min15.py`) — LE gain massif
+
+Sur 526 requêtes, comparaison sur clé bureau canonique (SD/bureau_code) :
+
+| Direction | n | baseline | enriched | Delta |
+|---|---:|---:|---:|---:|
+| **DSS** | 212 | **1.9 %** | **70.8 %** | **+69 pts** |
+| **DGS** | 70 | 1.4 % | **60.0 %** | **+59 pts** |
+| **DGE** | 57 | 0 % | **54.4 %** | **+54 pts** |
+| **DGOS** | 150 | 0.7 % | **35.3 %** | **+35 pts** |
+| DGCS | 36 | 88.9 % | 88.9 % | 0 |
+| **TOTAL** | 526 | **7.2 %** | **58.6 %** | **+51 pts** |
+
+Conclusion : injecter MIN15 dans le training kNN débloque littéralement l'algo bureau pour DGOS/DGS/DSS/DGE. Passage de "inutilisable" à "vraiment utile". DGCS reste stable (déjà à 89 %, aucune marge).
+
+**Ordre d'implémentation naturel** :
+1. Créer une vue Postgres `question_attributions_all` = UNION(question_attributions avec bureau, question_bureau_extract → canonical key)
+2. Modifier le kNN prod (`src/lib/direction/attributionAlgo.ts` ou équivalent bureau) pour lire cette vue
+3. Rejouer l'éval fine avant deploy — s'assurer que DGCS reste à 89 % et pas de dégradation ailleurs
+
 ## Ce qu'il reste à faire (hors PR #45)
 
 1. **Enrichir le référentiel `bureaux`** avec les bureaux DGOS / DGS /
