@@ -63,6 +63,19 @@ def _dedup_by_key(
     return sorted(seen.values(), key=lambda x: -x[1])
 
 
+def _sigmoid(x: float) -> float:
+    """Numerically stable logistic sigmoid, safe for any magnitude of ``x``.
+
+    ``math.exp`` overflows for very large arguments, so the exponent is kept
+    on the negative side regardless of the sign of ``x``.
+    """
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    z = math.exp(x)
+    return z / (1.0 + z)
+
+
 def _to_relevance(agg_score: float, pool_scores: list[float]) -> float:
     """Relevance of an office for a question, as a percentage.
 
@@ -88,13 +101,13 @@ def _to_relevance(agg_score: float, pool_scores: list[float]) -> float:
 
     Returns a float in [0.0, 100.0], rounded to one decimal place.
     """
-    absolute = 100.0 / (1.0 + math.exp(-agg_score))
+    absolute = 100.0 * _sigmoid(agg_score)
 
     if len(pool_scores) < 2:
         return round(absolute, 1)
 
     median_score = statistics.median(pool_scores)
-    median_abs = 100.0 / (1.0 + math.exp(-median_score))
+    median_abs = 100.0 * _sigmoid(median_score)
 
     # Linear relative component: each unit of deviation from the pool median
     # maps to PP_PER_UNIT percentage points.  Clamped to [0, 100].
