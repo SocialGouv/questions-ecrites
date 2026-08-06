@@ -67,6 +67,6 @@ clean:
 
 # Development server
 dev:
-	poetry run uvicorn api.main:app --reload
+	poetry run uvicorn api.main:app --reload --port $${PORT:-8000}
 
 .PHONY: install test integration_test lint lint-fix format format-check typecheck security pre-commit check clean qdrant-dump dev
