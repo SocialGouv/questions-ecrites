@@ -73,6 +73,31 @@ def test_empty_indexation_returns_none_objet():
     assert pq.objet is None
 
 
+def test_rubrique_used_as_last_resort():
+    """Freshly-published questions may carry a <rubrique> before any
+    <analyse> has been written; the rubrique then serves as the title."""
+    xml = _question_xml(
+        "<rubrique>retraites : fonctionnaires civils et militaires</rubrique>"
+        "<teteAnalyse/>"
+        "<analyses><analyse/></analyses>"
+    )
+    pq = parse_an_archive_question_xml(xml)
+    assert pq is not None
+    assert pq.objet == "retraites : fonctionnaires civils et militaires"
+
+
+def test_rubrique_not_used_when_analyse_present():
+    """The broad rubrique must never shadow a specific analyse."""
+    xml = _question_xml(
+        "<rubrique>énergie et carburants</rubrique>"
+        "<teteAnalyse/>"
+        "<analyses><analyse>Prix de l'électricité en zone rurale</analyse></analyses>"
+    )
+    pq = parse_an_archive_question_xml(xml)
+    assert pq is not None
+    assert pq.objet == "Prix de l'électricité en zone rurale"
+
+
 @pytest.mark.parametrize(
     "inner,expected",
     [
