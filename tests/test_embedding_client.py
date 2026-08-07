@@ -39,11 +39,16 @@ def _ok_response(n_texts: int) -> _FakeResponse:
     )
 
 
-_BLOCKED = _FakeResponse(
-    403,
-    text='{"error":{"message":"Content blocked: eu_ai_act_art5 match","code":"403"}}',
-)
-_AUTH_DENIED = _FakeResponse(403, text='{"detail":"Forbidden"}')
+def _blocked() -> _FakeResponse:
+    """Fresh instance per use — no state shared between tests."""
+    return _FakeResponse(
+        403,
+        text='{"error":{"message":"Content blocked: eu_ai_act_art5 match","code":"403"}}',
+    )
+
+
+def _auth_denied() -> _FakeResponse:
+    return _FakeResponse(403, text='{"detail":"Forbidden"}')
 
 
 class _ScriptedClient(EmbeddingClient):
@@ -70,9 +75,9 @@ def test_partial_happy_path_is_a_single_batch_call():
 def test_partial_isolates_the_blocked_text():
     client = _ScriptedClient(
         [
-            _BLOCKED,  # whole batch rejected
+            _blocked(),  # whole batch rejected
             lambda texts: _ok_response(1),  # "a" alone → OK
-            _BLOCKED,  # "b" alone → blocked
+            _blocked(),  # "b" alone → blocked
             lambda texts: _ok_response(1),  # "c" alone → OK
         ]
     )
@@ -82,7 +87,7 @@ def test_partial_isolates_the_blocked_text():
 
 
 def test_auth_403_raises_without_per_item_fallback():
-    client = _ScriptedClient([_AUTH_DENIED])
+    client = _ScriptedClient([_auth_denied()])
     with pytest.raises(requests.HTTPError):
         client.embed_batch_partial(["a", "b"])
     assert len(client.calls) == 1  # no retry storm on a revoked key
@@ -96,6 +101,6 @@ def test_server_error_raises_without_fallback():
 
 
 def test_embed_batch_raises_typed_error_on_content_block():
-    client = _ScriptedClient([_BLOCKED])
+    client = _ScriptedClient([_blocked()])
     with pytest.raises(ContentBlockedError):
         client.embed_batch(["a"])
