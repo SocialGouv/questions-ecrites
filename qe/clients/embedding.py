@@ -9,16 +9,19 @@ import requests
 logger = logging.getLogger(__name__)
 
 # Markers that identify a guardrail rejection (e.g. the platform's
-# EU-AI-Act content filters) in a 403 response body. Distinct from an
-# auth 403, whose body carries none of these — auth failures must keep
-# raising immediately instead of triggering a pointless per-item retry.
-_CONTENT_BLOCK_MARKERS = ("Content blocked", "guardrail")
+# EU-AI-Act content filters) in a 403 response body. Matched
+# case-insensitively, and deliberately specific ("content blocked" is
+# the platform's error message prefix, "guardrail_name" its JSON field)
+# — a generic word like "guardrail" alone could match an unrelated 403
+# body and silently convert an outage into mass per-item skips. Auth
+# 403s carry none of these and must keep raising immediately.
+_CONTENT_BLOCK_MARKERS = ("content blocked", "guardrail_name")
 
 
 def _is_content_block(response: requests.Response) -> bool:
     if response.status_code != 403:
         return False
-    body = response.text[:2000]
+    body = response.text[:2000].lower()
     return any(marker in body for marker in _CONTENT_BLOCK_MARKERS)
 
 
