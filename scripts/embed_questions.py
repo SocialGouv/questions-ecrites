@@ -32,8 +32,7 @@ Usage:
     poetry run python scripts/embed_questions.py --source AN --legislature 17 --rate-limit 60
 
 Requires:
-    - PLIAGE_API_KEY environment variable set
-    - LLM_BASE_URL (or EMBEDDINGS_URL) environment variable set
+    - ALBERT_API_KEY environment variable set
     - A running PostgreSQL with ingested questions (run ingest_an_legacy.py / ingest_senat.py first)
 """
 
@@ -54,7 +53,7 @@ from qe import db
 from qe.clients.embedding import EmbeddingClient
 from qe.clients.pgvector_client import PgvectorClient
 from qe.clients.vector_store import VectorStore
-from qe.config import get_settings, require_api_key
+from qe.config import get_settings
 from qe.hashing import make_preview
 from qe.models import Question
 from qe.rate_limiter import TokenBucketRateLimiter
@@ -158,7 +157,6 @@ def _parse_args() -> EmbedConfig:
     args = parser.parse_args()
 
     settings = get_settings()
-    api_key = require_api_key("PLIAGE_API_KEY")
 
     def _parse_date(val: str | None, flag: str) -> date | None:
         if val is None:
@@ -170,9 +168,9 @@ def _parse_args() -> EmbedConfig:
 
     return EmbedConfig(
         collection=args.collection,
-        embedding_model=args.embedding_model or settings.embedding_model,
-        embeddings_url=settings.embeddings_url,
-        api_key=api_key,
+        embedding_model=args.embedding_model or settings.albert_embedding_model,
+        embeddings_url=settings.albert_embeddings_url,
+        api_key=settings.albert_api_key,
         filter_status=args.filter_status,
         ministry=args.ministry,
         source=args.source,

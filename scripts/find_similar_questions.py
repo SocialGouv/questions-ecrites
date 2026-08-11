@@ -26,8 +26,7 @@ Usage:
     --threshold 0.70
 
 Requires:
-  - PLIAGE_API_KEY environment variable set
-  - LLM_BASE_URL (or EMBEDDINGS_URL) environment variable set
+  - ALBERT_API_KEY environment variable set
   - A populated pgvector table (run embed_questions.py first)
 """
 
@@ -43,7 +42,7 @@ from qe import db
 from qe.clients.embedding import EmbeddingClient
 from qe.clients.pgvector_client import PgvectorClient
 from qe.clients.vector_store import VectorStore
-from qe.config import get_settings, require_api_key
+from qe.config import get_settings
 from qe.documents import read_document
 from qe.models import Question
 
@@ -136,7 +135,6 @@ def parse_args() -> SearchConfig:
     args = parser.parse_args()
 
     settings = get_settings()
-    api_key = require_api_key("PLIAGE_API_KEY")
 
     if args.file:
         question_text = read_document(args.file).strip()
@@ -157,9 +155,9 @@ def parse_args() -> SearchConfig:
     return SearchConfig(
         question_text=question_text,
         collection=args.collection,
-        embedding_model=args.embedding_model or settings.embedding_model,
-        embeddings_url=settings.embeddings_url,
-        api_key=api_key,
+        embedding_model=args.embedding_model or settings.albert_embedding_model,
+        embeddings_url=settings.albert_embeddings_url,
+        api_key=settings.albert_api_key,
         top_k=args.top_k,
         threshold=args.threshold,
         filter_status=args.filter_status,

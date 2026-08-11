@@ -42,9 +42,9 @@ def main() -> int:
         return 1
 
     embedder = EmbeddingClient(
-        url=settings.embeddings_url,
-        api_key=settings.socle_api_key,
-        model=settings.embedding_model,
+        url=settings.albert_embeddings_url,
+        api_key=settings.albert_api_key,
+        model=settings.albert_embedding_model,
     )
     vector_store = PgvectorClient()
 

@@ -118,21 +118,19 @@ Returns semantically similar items from another collection, reranked with Albert
 
 ## Environment variables
 
-| Variable               | Required       | Default                     | Description                         |
-| ---------------------- | -------------- | --------------------------- | ----------------------------------- |
-| `PLIAGE_API_KEY`       | Yes            | —                           | Socle IA API key (embeddings + LLM) |
-| `LLM_BASE_URL`         | Yes            | —                           | Base URL for Socle IA services      |
-| `LLM_MODEL`            | Yes            | —                           | LLM model name                      |
-| `ALBERT_API_KEY`       | Yes (API only) | —                           | Albert reranking API key            |
-| `EMBEDDING_MODEL`      | No             | `BAAI/bge-m3`               | Embedding model                     |
-| `EMBEDDINGS_URL`       | No             | derived from `LLM_BASE_URL` | Override embeddings endpoint        |
-| `CHAT_COMPLETIONS_URL` | No             | derived from `LLM_BASE_URL` | Override chat completions endpoint  |
-| `CORS_ORIGINS`         | No             | `http://localhost:3000`     | Comma-separated allowed origins     |
-| `PGHOST`               | No             | `localhost`                 | PostgreSQL host                     |
-| `PGPORT`               | No             | `5433`                      | PostgreSQL port                     |
-| `PGUSER`               | No             | `qe`                        | PostgreSQL user                     |
-| `PGPASSWORD`           | No             | `qe`                        | PostgreSQL password                 |
-| `PGDATABASE`           | No             | `qe`                        | PostgreSQL database                 |
+| Variable                 | Required | Default                              | Description                              |
+| ------------------------ | -------- | ------------------------------------- | ----------------------------------------- |
+| `ALBERT_API_KEY`         | Yes      | —                                      | Albert API key (embeddings + reranking)  |
+| `ALBERT_BASE_URL`        | No       | `https://albert.api.etalab.gouv.fr` | Albert API base URL                      |
+| `ALBERT_EMBEDDING_MODEL` | No       | `BAAI/bge-m3`                       | Embedding model                          |
+| `ALBERT_RERANK_MODEL`    | No       | `openweight-rerank`                 | Reranking model                          |
+| `ALBERT_EMBEDDINGS_URL`  | No       | derived from `ALBERT_BASE_URL`      | Override embeddings endpoint             |
+| `CORS_ORIGINS`           | No       | `http://localhost:3000`             | Comma-separated allowed origins          |
+| `PGHOST`                 | No       | `localhost`                        | PostgreSQL host                          |
+| `PGPORT`                 | No       | `5433`                             | PostgreSQL port                          |
+| `PGUSER`                 | No       | `qe`                               | PostgreSQL user                          |
+| `PGPASSWORD`             | No       | `qe`                               | PostgreSQL password                      |
+| `PGDATABASE`             | No       | `qe`                               | PostgreSQL database                      |
 
 ## Interact with DB in Socle Data
 

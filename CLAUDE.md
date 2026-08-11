@@ -14,8 +14,8 @@ Office assignment system for French parliamentary questions ("questions écrites
 ## Project conventions
 
 - **No `__init__.py` files.** This project uses implicit namespace packages (PEP 420). Do not create `__init__.py` files. Use direct imports to submodules (e.g. `from qe.clients.pgvector_client import PgvectorClient`, not `from qe.clients import PgvectorClient`).
-- **Frozen dataclasses** for immutable config (e.g. `Settings`, `SocleLLMClient`).
-- **Protocol classes** for plugin interfaces: `Chunker`, `DutyExtractor`, `VectorStore`.
+- **Frozen dataclasses** for immutable config (e.g. `Settings`).
+- **Protocol classes** for plugin interfaces: `Chunker`, `VectorStore`.
 - **Deterministic UUIDs** from SHA-256 hashes of file paths/content for idempotent vector upserts.
 - **Python >= 3.12**, managed with Poetry. Use `poetry run` to run scripts.
 - **Keep code DRY.** Before adding logic to a script, check whether it already exists in `qe/`. Shared helpers belong in the package, not copy-pasted across scripts.
@@ -28,8 +28,7 @@ api/
 
 qe/                         # Main package (no __init__.py)
 ├── clients/
-│   ├── embedding.py        # EmbeddingClient → Socle IA embeddings API
-│   ├── llm.py              # SocleLLMClient → Socle IA chat completions
+│   ├── embedding.py        # EmbeddingClient → Albert embeddings API
 │   ├── pgvector_client.py  # PgvectorClient → pgvector-backed vector store
 │   ├── vector_store.py     # VectorStore Protocol — backend-agnostic interface
 │   └── rerank.py           # RerankClient → Albert reranking API
@@ -40,7 +39,6 @@ qe/                         # Main package (no __init__.py)
 ├── documents.py            # load_documents(), read_document() (.txt/.pdf/.doc/.docx)
 ├── answer_embedding.py     # embed_answers() — embeds Reponse rows into vec_answers_opendata pgvector table
 ├── hashing.py              # stable_point_id(), stable_chunk_id(), stable_question_point_id(), stable_answer_point_id(), compute_content_hash()
-├── llm_duties.py           # DutyExtractor protocol
 ├── models.py               # SQLAlchemy models: Question, Reponse, QuestionStateChange, …
 └── office_ingestion.py     # parse_office_xlsx(), ingest_office_xlsx()
 
@@ -63,11 +61,14 @@ data/
 
 | Service        | Purpose                         | Config                                                         |
 | -------------- | ------------------------------- | -------------------------------------------------------------- |
-| **Socle IA**   | Embeddings + LLM chat           | `LLM_BASE_URL`, `PLIAGE_API_KEY`, `LLM_MODEL`                  |
-| **Albert**     | Reranking                       | `ALBERT_API_KEY`, default model `openweight-rerank`            |
+| **Albert**     | Embeddings + Reranking           | `ALBERT_API_KEY`, `ALBERT_BASE_URL`, `ALBERT_EMBEDDING_MODEL`, `ALBERT_RERANK_MODEL` |
 | **PostgreSQL** | Application data + vector store | `PGHOST/PORT/USER/PASSWORD/DATABASE`, local via docker-compose |
 
-Default embedding model: `BAAI/bge-m3` (via `EMBEDDING_MODEL` env var).
+Default embedding model: `BAAI/bge-m3` (via `ALBERT_EMBEDDING_MODEL` env var).
+
+PLIAGE (the OpenWebUI instance at `ia.social.gouv.fr`) is a separate provider
+used only by qe-front's spelling-correction feature — it is never wired into
+this repo.
 
 ## pgvector tables
 
@@ -85,7 +86,7 @@ Row IDs in all tables are deterministic UUID strings derived from SHA-256 hashes
 ALBERT_API_KEY=... poetry run uvicorn api.main:app --reload
 ```
 
-`GET /api/questions/{question_id}/attributions?top_k=3` — returns the top-N office suggestions for a question. The question's embedding is fetched from `questions_opendata` (no Socle IA call); only the Albert reranker is called. Each suggestion includes `rank`, `office_id`, `office_name`, `direction`, `score` (aggregated rerank score), and `relevance` (absolute relevance as a percentage, 0.0–100.0).
+`GET /api/questions/{question_id}/attributions?top_k=3` — returns the top-N office suggestions for a question. The question's embedding is fetched from `questions_opendata` (no embedding API call); only the Albert reranker is called. Each suggestion includes `rank`, `office_id`, `office_name`, `direction`, `score` (aggregated rerank score), and `relevance` (absolute relevance as a percentage, 0.0–100.0).
 
 **Relevance:** `relevance` is a blend of two signals (70 % absolute + 30 % relative). The absolute component is `sigmoid(best_chunk_score) × 100` — the model's raw judgment, independent of other results. The relative component is a pool-median-centred linear adjustment: each logit above the pool median adds ~6 pp, each logit below subtracts ~6 pp. The blend keeps tightly-clustered scores close together while making real score gaps visible. A question with no good match yields a low relevance for every office.
 

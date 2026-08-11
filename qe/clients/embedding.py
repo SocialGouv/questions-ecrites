@@ -1,4 +1,4 @@
-"""Socle IA embeddings API client."""
+"""Albert API embeddings client."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingClient:
-    """Generate text embeddings via the Socle IA API."""
+    """Generate text embeddings via the Albert API."""
 
     def __init__(
         self, *, url: str, model: str, api_key: str, timeout: int = 60

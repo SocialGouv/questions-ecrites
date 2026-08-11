@@ -14,51 +14,37 @@ from dataclasses import dataclass
 class Settings:
     """Resolved application settings."""
 
-    socle_api_key: str
     albert_api_key: str
     albert_base_url: str
     albert_rerank_model: str
-    llm_base_url: str
-    chat_completions_url: str
-    embeddings_url: str
-    llm_model: str
-    embedding_model: str
+    albert_embedding_model: str
+    albert_embeddings_url: str
 
 
 def get_settings() -> Settings:
     """Read env vars and build a Settings instance.
 
-    URL derivation rules:
-      - CHAT_COMPLETIONS_URL defaults to {LLM_BASE_URL}/api/v1/chat/completions
-      - EMBEDDINGS_URL defaults to {LLM_BASE_URL}/api/embeddings
-      - Explicit env vars always take precedence over derived values.
+    All LLM/embedding/reranking calls in this repo go through the Albert API.
+    PLIAGE (the OpenWebUI instance behind LLM_BASE_URL/PLIAGE_API_KEY) is a
+    separate provider used only by qe-front's correction feature — it must
+    never be wired into this repo's settings.
+
+    URL derivation rule:
+      - ALBERT_EMBEDDINGS_URL defaults to {ALBERT_BASE_URL}/v1/embeddings.
 
     Raises ValueError if required variables are missing.
     """
-    llm_base_url = os.environ.get("LLM_BASE_URL", "")
-
-    chat_completions_url = os.environ.get("CHAT_COMPLETIONS_URL", "")
-    if not chat_completions_url and llm_base_url:
-        chat_completions_url = f"{llm_base_url.rstrip('/')}/api/v1/chat/completions"
-
-    embeddings_url = os.environ.get("EMBEDDINGS_URL", "")
-    if not embeddings_url and llm_base_url:
-        embeddings_url = f"{llm_base_url.rstrip('/')}/api/embeddings"
-
-    socle_api_key = os.environ.get("PLIAGE_API_KEY", "")
     albert_api_key = os.environ.get("ALBERT_API_KEY", "")
     albert_base_url = os.environ.get("ALBERT_BASE_URL", "https://albert.api.etalab.gouv.fr")
     albert_rerank_model = os.environ.get("ALBERT_RERANK_MODEL", "openweight-rerank")
-    llm_model = os.environ.get("LLM_MODEL", "")
-    embedding_model = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3")
+    albert_embedding_model = os.environ.get("ALBERT_EMBEDDING_MODEL", "BAAI/bge-m3")
+    albert_embeddings_url = os.environ.get("ALBERT_EMBEDDINGS_URL", "") or (
+        f"{albert_base_url.rstrip('/')}/v1/embeddings"
+    )
 
     missing: list[str] = []
-    if not socle_api_key:
-        missing.append("PLIAGE_API_KEY")
-    if not llm_base_url and not (chat_completions_url and embeddings_url):
-        missing.append("LLM_BASE_URL (or both CHAT_COMPLETIONS_URL and EMBEDDINGS_URL)")
-    if not llm_model:
-        missing.append("LLM_MODEL")
+    if not albert_api_key:
+        missing.append("ALBERT_API_KEY")
 
     if missing:
         raise ValueError(
@@ -66,15 +52,11 @@ def get_settings() -> Settings:
         )
 
     return Settings(
-        socle_api_key=socle_api_key,
         albert_api_key=albert_api_key,
         albert_base_url=albert_base_url,
         albert_rerank_model=albert_rerank_model,
-        llm_base_url=llm_base_url,
-        chat_completions_url=chat_completions_url,
-        embeddings_url=embeddings_url,
-        llm_model=llm_model,
-        embedding_model=embedding_model,
+        albert_embedding_model=albert_embedding_model,
+        albert_embeddings_url=albert_embeddings_url,
     )
 
 

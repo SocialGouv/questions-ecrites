@@ -20,8 +20,7 @@ Usage:
     poetry run python scripts/embed_answers.py --source AN --rate-limit 60
 
 Requires:
-    - PLIAGE_API_KEY environment variable set
-    - LLM_BASE_URL (or EMBEDDINGS_URL) environment variable set
+    - ALBERT_API_KEY environment variable set
     - A running PostgreSQL with ingested answers (run ingest_an_legacy.py / ingest_senat.py first)
 """
 
@@ -91,12 +90,12 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = get_settings()
-    embedding_model = args.embedding_model or settings.embedding_model
+    embedding_model = args.embedding_model or settings.albert_embedding_model
 
     embedder = EmbeddingClient(
-        url=settings.embeddings_url,
+        url=settings.albert_embeddings_url,
         model=embedding_model,
-        api_key=settings.socle_api_key,
+        api_key=settings.albert_api_key,
     )
     vector_store = PgvectorClient()
     rate_limiter = (

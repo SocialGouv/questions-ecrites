@@ -271,9 +271,9 @@ def try_embed_answers_from_env(source: str) -> EmbedStats | None:
         return None
 
     embedder = EmbeddingClient(
-        url=settings.embeddings_url,
-        model=settings.embedding_model,
-        api_key=settings.socle_api_key,
+        url=settings.albert_embeddings_url,
+        model=settings.albert_embedding_model,
+        api_key=settings.albert_api_key,
     )
     vector_store = PgvectorClient()
 
@@ -281,7 +281,7 @@ def try_embed_answers_from_env(source: str) -> EmbedStats | None:
         stats = embed_answers(
             embedder=embedder,
             vector_store=vector_store,
-            embedding_model=settings.embedding_model,
+            embedding_model=settings.albert_embedding_model,
             source=source,
         )
         logger.info(
