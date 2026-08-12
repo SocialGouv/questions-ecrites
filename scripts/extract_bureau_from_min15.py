@@ -4,7 +4,7 @@ workflow data into `question_bureau_extract`.
 
 Rationale
 ---------
-`question_attributions.bureau_reel_id` is populated only for DGCS
+`question_real_attributions.bureau_reel_id` is populated only for DGCS
 (~94 % coverage) and partially for DSS (~49 %). All other directions
 (DGOS, DGS, DGEFP, DGT) have 0 bureau coverage — the vector-based
 attribution algorithm has no human examples to learn from at bureau
