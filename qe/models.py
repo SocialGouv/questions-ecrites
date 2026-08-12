@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Text,
+    false,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -175,6 +176,20 @@ class Question(Base):
 
     # --- textes ---
     texte_question: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # --- analyse de texte_question (scripts/analyze_questions.py) ---
+    # Découpage contexte / demande réelle, et détection des rappels (une
+    # relance dont le texte n'est que « rappelle les termes de sa question »).
+    # analyzed_at reste NULL tant que la question n'a pas été analysée : c'est
+    # le curseur du backfill.
+    contexte_extrait: Mapped[str | None] = mapped_column(Text, nullable=True)
+    question_extraite: Mapped[str | None] = mapped_column(Text, nullable=True)
+    est_rappel: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false()
+    )
+    analyzed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # --- réponse (None tant que EN_COURS) ---
     reponse_id: Mapped[str | None] = mapped_column(
