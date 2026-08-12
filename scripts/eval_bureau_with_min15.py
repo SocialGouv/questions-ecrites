@@ -8,7 +8,7 @@ DGCS-first et n'a pas encore d'entrées DGOS/DGS/DSS, donc il n'y a
 pas de FK propre à utiliser.
 
 Sources de voters (bureau) :
-- **baseline** : bureaux issus de `question_attributions.bureau_reel_id`
+- **baseline** : bureaux issus de `question_real_attributions.bureau_reel_id`
   (5 925 DGCS + 1 011 DSS + rares autres)
 - **enriched** : baseline + `question_bureau_extract` (1 275 DSS +
   1 143 DGOS + 378 DGS + 251 DGE + 153 DGCS + etc.)
@@ -128,7 +128,7 @@ DDL_BASELINE_VOTERS = """
     DROP TABLE IF EXISTS tmp_voters_baseline;
     CREATE TEMP TABLE tmp_voters_baseline AS
     SELECT qa.question_id, b.nom AS bureau_nom
-    FROM question_attributions qa
+    FROM question_real_attributions qa
     JOIN bureaux b ON b.id = qa.bureau_reel_id
     WHERE qa.bureau_reel_id IS NOT NULL;
     CREATE INDEX ON tmp_voters_baseline(question_id);
@@ -165,10 +165,10 @@ def make_voters_table(session, table: str, enriched: bool) -> None:
             bureau_key  text NOT NULL
         )
     """))
-    # 1) DGCS/DSS from question_attributions
+    # 1) DGCS/DSS from question_real_attributions
     rows_dgcs = session.execute(sqltext("""
         SELECT qa.question_id, b.nom
-        FROM question_attributions qa
+        FROM question_real_attributions qa
         JOIN bureaux b ON b.id = qa.bureau_reel_id
         WHERE qa.bureau_reel_id IS NOT NULL
     """)).all()

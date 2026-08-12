@@ -5,7 +5,7 @@ training set du kNN.
 Mesure le gain effectif de nourrir `question_bureau_extract` au kNN,
 sur le set de test constitué de `question_bureau_extract` lui-même
 (source-of-truth extraite des workflows MIN15, indépendante du training
-actuel qui n'utilise que `question_attributions`).
+actuel qui n'utilise que `question_real_attributions`).
 
 Pipeline pour chaque QE test :
 1. On récupère son vecteur.
@@ -15,7 +15,7 @@ Pipeline pour chaque QE test :
 4. On compare avec la direction MIN15 de référence.
 
 Deux sources de voters à tester :
-- **baseline** : `question_attributions.direction_reelle_id` seul (le training
+- **baseline** : `question_real_attributions.direction_reelle_id` seul (le training
   actuel de la prod)
 - **enriched** : UNION(direction_reelle_id, question_bureau_extract.direction_txt→id)
 
@@ -57,7 +57,7 @@ TESTABLE_DIRECTIONS = ("DGCS", "DSS", "DGOS", "DGS", "DGEFP", "DGT")
 
 VOTERS_BASELINE = """
     SELECT qa.question_id, qa.direction_reelle_id AS direction_id
-    FROM question_attributions qa
+    FROM question_real_attributions qa
     WHERE qa.direction_reelle_id IS NOT NULL
       AND qa.question_id <> :src_qid
 """
@@ -66,7 +66,7 @@ VOTERS_BASELINE = """
 # Only directions we can map (nom exact match) contribute.
 VOTERS_ENRICHED = """
     SELECT qa.question_id, qa.direction_reelle_id AS direction_id
-    FROM question_attributions qa
+    FROM question_real_attributions qa
     WHERE qa.direction_reelle_id IS NOT NULL
       AND qa.question_id <> :src_qid
     UNION

@@ -1,6 +1,6 @@
 """add question_bureau_extract — bureau réel extrait de MIN15
 
-Isolée dans une table dédiée (pas de colonne sur `question_attributions`)
+Isolée dans une table dédiée (pas de colonne sur `question_real_attributions`)
 pour bien séparer la source. Une ligne par (question_id, direction) pour
 supporter les QE réattribuées entre directions — la ligne "dernière
 étape rédaction" est celle qui compte pour le bureau final.
@@ -32,7 +32,7 @@ from alembic import op
 
 
 revision: str = "c1d2e3f4a5b6"
-down_revision: Union[str, Sequence[str], None] = "a9b0c1d2e3f4"
+down_revision: Union[str, Sequence[str], None] = "e7f8a9b0c1d2"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -92,7 +92,7 @@ def upgrade() -> None:
     op.execute(
         "COMMENT ON TABLE question_bureau_extract IS "
         "'Bureau réel extrait des workflows MIN15 (outil Réponses). "
-        "Source complémentaire à question_attributions.bureau_reel_id "
+        "Source complémentaire à question_real_attributions.bureau_reel_id "
         "qui n''est peuplé que pour DGCS. Voir scripts/extract_bureau_from_min15.py "
         "pour la règle d''extraction.'"
     )

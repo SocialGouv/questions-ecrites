@@ -16,7 +16,7 @@ d'extraire un bureau pour **3 216 (question_id, direction)** — dont
 (échantillon aléatoire).
 
 L'extraction va dans une **table dédiée** `question_bureau_extract`
-(pas dans `question_attributions`) : sources isolées, réversible,
+(pas dans `question_real_attributions`) : sources isolées, réversible,
 comparable.
 
 Voir SocialGouv/questions-ecrites#45 pour l'implémentation.
@@ -25,10 +25,10 @@ Voir SocialGouv/questions-ecrites#45 pour l'implémentation.
 
 ### 1. Le "bureau_reel_id" existant vient de 15 sources
 
-Le champ `question_attributions.bureau_reel_id` avait déjà des données :
+Le champ `question_real_attributions.bureau_reel_id` avait déjà des données :
 5 925 pour DGCS, 1 011 pour DSS, 0 pour les autres. On pensait ces
 données annotées à la main, direction par direction. En creusant les
-sources (`question_attributions.source`), on trouve **15 fichiers Excel
+sources (`question_real_attributions.source`), on trouve **15 fichiers Excel
 distincts** :
 
 | Fichier | Nb attributions | Direction(s) | Origine réelle |
@@ -147,7 +147,7 @@ tard côté enrichissement.
 ## Utiliser MIN15 comme jeu de test indépendant
 
 Idée méthodo : `question_bureau_extract` n'a jamais été vue par l'algo
-d'attribution (le kNN s'entraîne sur `question_attributions`). C'est
+d'attribution (le kNN s'entraîne sur `question_real_attributions`). C'est
 donc un **test set réellement indépendant** — bien mieux que le
 leave-one-out sur les données d'entraînement, qui sous-estime
 systématiquement l'erreur (les QE thématiquement voisines s'aident les
@@ -221,7 +221,7 @@ Sur 523 requêtes, gain quasi-nul — MIN15 confirme des directions déjà connu
 | DGCS | 45 | 100 % | 100 % | 0 |
 | **TOTAL** | 523 | **82.2 %** | **83.7 %** | **+1.5** |
 
-Conclusion : la direction n'a pas besoin de MIN15 — elle est déjà couverte via `direction_reelle_id`. Le seul mouvement (DGOS +4.6 pts) vient de QE MIN15 qui n'avaient pas d'entrée dans `question_attributions`.
+Conclusion : la direction n'a pas besoin de MIN15 — elle est déjà couverte via `direction_reelle_id`. Le seul mouvement (DGOS +4.6 pts) vient de QE MIN15 qui n'avaient pas d'entrée dans `question_real_attributions`.
 
 ### Bureau (`scripts/eval_bureau_with_min15.py`) — LE gain massif
 
@@ -239,7 +239,7 @@ Sur 526 requêtes, comparaison sur clé bureau canonique (SD/bureau_code) :
 Conclusion : injecter MIN15 dans le training kNN débloque littéralement l'algo bureau pour DGOS/DGS/DSS/DGE. Passage de "inutilisable" à "vraiment utile". DGCS reste stable (déjà à 89 %, aucune marge).
 
 **Ordre d'implémentation naturel** :
-1. Créer une vue Postgres `question_attributions_all` = UNION(question_attributions avec bureau, question_bureau_extract → canonical key)
+1. Créer une vue Postgres `question_attributions_all` = UNION(question_real_attributions avec bureau, question_bureau_extract → canonical key)
 2. Modifier le kNN prod (`src/lib/direction/attributionAlgo.ts` ou équivalent bureau) pour lire cette vue
 3. Rejouer l'éval fine avant deploy — s'assurer que DGCS reste à 89 % et pas de dégradation ailleurs
 
@@ -249,7 +249,7 @@ Conclusion : injecter MIN15 dans le training kNN débloque littéralement l'algo
    DSS observés — actuellement DGCS-first (SD/bureau).
 2. **Résoudre `question_bureau_extract` → `bureaux.id`** — mapper les
    libellés texte vers des FKs propres.
-3. **Décider si on alimente `question_attributions.bureau_reel_id`
+3. **Décider si on alimente `question_real_attributions.bureau_reel_id`
    depuis MIN15** quand vide (aujourd'hui la table extract est
    consommable telle quelle par les modules attribution).
 4. **Filtrer les rôles admin** ("MAJ", "Chef de bureau" nu, etc.) qui
@@ -275,7 +275,7 @@ pour 3 216 pairs), auditable (provenance conservée via
 ## Signalé, non résolu
 
 - **Les 5 lignes DFAS + 2 DARES + 2 DRH + 1 HDH** dans
-  `question_attributions.source` sont probablement des exports
+  `question_real_attributions.source` sont probablement des exports
   REPONSES par direction. On peut les remplacer entièrement par le
   pipeline MIN15 une fois validé.
 - **Le fichier `QE consolidees - DAC MSO - 2026.xlsx`** (3 510
