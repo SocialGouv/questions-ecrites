@@ -3,7 +3,7 @@
 Parses the PostgreSQL pg_dump published at
     https://data.senat.fr/data/questions/questions.zip
 (a ZIP containing a single .sql file) and upserts questions écrites from
-legislatures 14–17 into the database.
+legislature 14 onward into the database.
 
 The dump uses pg_dump's ``COPY ... FROM stdin`` format with tab-delimited rows
 and **internal database column names** (e.g. ``natquecod``, ``sorquecod``,
@@ -18,7 +18,7 @@ Relevant tables in the dump (in dump order):
 Key conventions:
   - Only rows with ``natquecod = 'QE'`` are imported.
   - Legislature is read directly from the ``legislature`` column (no date
-    derivation needed).  Only legislatures 14–17 are kept.
+    derivation needed).  Only legislature 14 onward is kept.
   - The question primary key follows the shared convention:
     ``"SENAT-{legislature}-QE-{numero}"``.
   - Response text is in ``tam_reponses.txtrep`` (joined on question id).
@@ -47,7 +47,7 @@ from qe.ingestion_an import (
 
 logger = logging.getLogger(__name__)
 
-_TARGET_LEGISLATURES = frozenset({14, 15, 16, 17})
+_MIN_LEGISLATURE = 14
 
 # pg_dump COPY header: COPY [schema.]table (col1, col2, ...) FROM stdin;
 _COPY_RE = re.compile(
@@ -171,11 +171,11 @@ class _PartialQ:
 
 
 def parse_senat_sql_dump(sql_file: IO[bytes]) -> list[ParsedQuestion]:  # noqa: C901
-    """Stream-parse a Sénat pg_dump file, returning QE questions for legs 14–17.
+    """Stream-parse a Sénat pg_dump file, returning QE questions from leg 14 onward.
 
     Performs a single pass over the dump collecting:
       - ``sortquestion``  → sort_map  (sorquecod → status label)
-      - ``tam_questions`` → partial question rows (filtered to QE + legs 14–17)
+      - ``tam_questions`` → partial question rows (filtered to QE + leg >= 14)
       - ``tam_reponses``  → responses dict (question id → response data)
       - ``the``           → theme_map (thecle → thelib)
 
@@ -246,13 +246,13 @@ def parse_senat_sql_dump(sql_file: IO[bytes]) -> list[ParsedQuestion]:  # noqa: 
             if _get(fields, current_cols, "natquecod") != "QE":
                 continue
 
-            # Filter: legislature 14–17
+            # Filter: legislature 14 onward
             leg_str = _get(fields, current_cols, "legislature")
             try:
                 legislature = int(leg_str or "0")
             except ValueError:
                 continue
-            if legislature not in _TARGET_LEGISLATURES:
+            if legislature < _MIN_LEGISLATURE:
                 continue
 
             # Question number
@@ -370,7 +370,7 @@ def ingest_senat_dump(
     """Parse and ingest the Sénat full-database SQL dump ZIP.
 
     Opens the ZIP, extracts the .sql file, stream-parses COPY blocks for
-    all relevant tables, filters to ``Nature=QE`` and legislatures 14–17,
+    all relevant tables, filters to ``Nature=QE`` and legislature 14 onward,
     and upserts questions into the database in batches.
     """
     logger.info("Processing %s", zip_path.name)
@@ -399,7 +399,7 @@ def ingest_senat_dump(
             questions = parse_senat_sql_dump(sql_file)
 
     logger.info(
-        "  %d questions parsed (legislature 14–17, natquecod=QE)", len(questions)
+        "  %d questions parsed (legislature >= 14, natquecod=QE)", len(questions)
     )
 
     for i in range(0, len(questions), batch_size):

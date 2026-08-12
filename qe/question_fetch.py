@@ -2,8 +2,8 @@
 
 **AN questions** are only published as a consolidated bulk ZIP archive — the AN
 does not serve individual XML files over HTTP.  Use
-``scripts/download_an_legacy.py --legislature 17 --ingest`` (run daily) to keep
-the database current.
+``scripts/download_an.py --legislature current --ingest`` (run daily) to
+keep the database current.
 
 **Sénat questions** can be fetched individually by scraping the Sénat's public
 question page:
@@ -271,6 +271,6 @@ def fetch_question(qid: str, http: requests.Session) -> ParsedQuestion | None:
     if upper.startswith("AN-"):
         raise ValueError(
             f"AN question '{qid}' cannot be fetched individually. "
-            "Run scripts/download_an_legacy.py --legislature 17 --ingest to refresh the database."
+            "Run scripts/download_an.py --legislature current --ingest to refresh the database."
         )
     raise ValueError(f"Unrecognised question ID format: {qid!r}")

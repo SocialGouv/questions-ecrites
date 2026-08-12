@@ -2,8 +2,8 @@
 """Ingest Sénat questions from the full-database SQL dump.
 
 Processes the ZIP downloaded by download_senat.py and upserts questions
-écrites from legislatures 14–17 into PostgreSQL, then embeds newly ingested
-answers into pgvector.
+écrites from legislature 14 onward into PostgreSQL, then embeds newly
+ingested answers into pgvector.
 
 Usage:
     poetry run python scripts/ingest_senat.py --file data/senat/questions.zip
@@ -54,7 +54,7 @@ def _dry_run(zip_path: Path) -> None:
     by_leg: dict[int, int] = collections.Counter(q.legislature for q in questions)
     by_etat: dict[str, int] = collections.Counter(q.etat_question for q in questions)
 
-    logger.info("[dry-run] %d questions parsed (Nature=QE, legislature 14–17)", total)
+    logger.info("[dry-run] %d questions parsed (Nature=QE, legislature >= 14)", total)
     logger.info("[dry-run] By legislature: %s", dict(sorted(by_leg.items())))
     logger.info("[dry-run] By état: %s", dict(sorted(by_etat.items())))
 

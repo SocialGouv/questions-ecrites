@@ -4,7 +4,7 @@
 The Sénat publishes a complete PostgreSQL dump of all written questions
 (1978–present) at https://data.senat.fr/data/questions/questions.zip.
 This archive is updated regularly.  The ingestion script filters to
-legislatures 14–17.
+legislature 14 onward.
 
 By default this script skips the download if questions.zip already exists
 locally.  Use --force to re-download and replace the local copy.
@@ -24,6 +24,8 @@ from pathlib import Path
 
 import requests
 
+from qe.downloads import download_with_retries
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -33,38 +35,6 @@ logger = logging.getLogger(__name__)
 
 _URL = "https://data.senat.fr/data/questions/questions.zip"
 _FILENAME = "questions.zip"
-
-
-def _download(url: str, dest: Path, http: requests.Session) -> bool:
-    """Stream *url* to *dest*. Returns True on success."""
-    try:
-        with http.get(url, stream=True, timeout=120) as resp:
-            resp.raise_for_status()
-            total = int(resp.headers.get("content-length", 0))
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            tmp = dest.with_suffix(".tmp")
-            downloaded = 0
-            with tmp.open("wb") as fh:
-                for chunk in resp.iter_content(chunk_size=1 << 17):  # 128 KB
-                    fh.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        pct = downloaded * 100 // total
-                        print(
-                            f"\r  {pct:3d}%  {downloaded // 1_000_000} MB",
-                            end="",
-                            flush=True,
-                        )
-            print()  # newline after progress
-            tmp.rename(dest)
-        return True
-    except requests.RequestException as exc:
-        print()
-        logger.error("Failed to download %s: %s", url, exc)
-        tmp = dest.with_suffix(".tmp")
-        if tmp.exists():
-            tmp.unlink()
-        return False
 
 
 def run(dest_dir: Path, force: bool, dry_run: bool) -> None:
@@ -88,7 +58,7 @@ def run(dest_dir: Path, force: bool, dry_run: bool) -> None:
     http = requests.Session()
     http.headers["User-Agent"] = "qe-ingestion/1.0"
 
-    ok = _download(_URL, dest, http)
+    ok = download_with_retries(_URL, dest, http)
     if ok:
         size_mb = dest.stat().st_size / 1_000_000
         logger.info("  saved: %s (%.1f MB)", dest, size_mb)
@@ -106,7 +76,7 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "The dump covers all Sénat questions from 1978 to present.\n"
-            "The ingestion script filters to legislatures 14–17."
+            "The ingestion script filters to legislature 14 onward."
         ),
     )
     parser.add_argument(
