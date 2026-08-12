@@ -83,7 +83,7 @@ class PgvectorClient:
     """VectorStore implementation backed by PostgreSQL + pgvector.
 
     Tables are created by the Alembic migration
-    ``c0d1e2f3a4b5_add_pgvector_tables``. Run ``alembic upgrade head`` before
+    ``62ff467c436e_init_schema``. Run ``alembic upgrade head`` before
     using this client.
     """
 

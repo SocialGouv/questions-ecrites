@@ -54,6 +54,36 @@ def _get_url() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Tables owned by qe-front (Next.js), migrated here but not backed by a
+# SQLAlchemy model in qe/models.py — see the qe-front tables section of
+# 62ff467c436e_init_schema. Without this filter, `alembic revision
+# --autogenerate` would see them as unknown to Base.metadata and propose
+# dropping every one of them.
+# ---------------------------------------------------------------------------
+_QE_FRONT_TABLES = {
+    "directions",
+    "sous_directions",
+    "bureaux",
+    "question_real_attributions",
+    "question_attribution_suggestions",
+    "question_similar_suggestions",
+    "suggestion_feedback",
+    "correction_feedback",
+    "app_settings",
+    "users",
+    "accounts",
+    "sessions",
+    "verificationTokens",
+}
+
+
+def _include_object(object, name, type_, reflected, compare_to):
+    if type_ == "table" and name in _QE_FRONT_TABLES:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Migration runner
 # ---------------------------------------------------------------------------
 
@@ -73,6 +103,7 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
+            include_object=_include_object,
             # Emit `COMMENT ON` DDL for server_default comparisons during autogenerate
             compare_server_default=True,
         )
