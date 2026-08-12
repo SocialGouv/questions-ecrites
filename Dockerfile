@@ -36,8 +36,8 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY . .
 
 # Non-root user
-RUN useradd -m -u 1000 qe && chown -R qe:qe /app
-USER qe
+RUN groupadd -g 1000 qe && useradd -m -u 1000 -g 1000 qe && chown -R qe:qe /app
+USER 1000:1000
 
 EXPOSE 8000
 
