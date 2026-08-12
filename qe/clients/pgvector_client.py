@@ -20,11 +20,12 @@ Scroll/get:    {"id": str, "vector": list[float], "payload": dict}
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Sequence, cast
 
 import sqlalchemy as sa
 from sqlalchemy import delete, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import CursorResult
 
 from qe import db
 from qe.models import (
@@ -48,7 +49,7 @@ def _resolve(name: str):
     return model
 
 
-def _build_where_clause(model, filter_payload: dict) -> sa.sql.ClauseElement | None:
+def _build_where_clause(model, filter_payload: dict) -> sa.ColumnElement[bool] | None:
     """Translate a filter dict into a SQLAlchemy WHERE clause.
 
     Supported patterns (the only ones used in this codebase):
@@ -56,7 +57,7 @@ def _build_where_clause(model, filter_payload: dict) -> sa.sql.ClauseElement | N
       must  / has_id     →  id IN (...)
       must_not / has_id  →  id NOT IN (...)
     """
-    clauses: list[sa.sql.ClauseElement] = []
+    clauses: list[sa.ColumnElement[bool]] = []
 
     for clause in filter_payload.get("must", []):
         if "key" in clause and "match" in clause:
@@ -153,7 +154,7 @@ class PgvectorClient:
             return False
         with db.get_session() as session:
             result = session.execute(delete(model))
-            return (result.rowcount or 0) > 0
+            return (cast(CursorResult, result).rowcount or 0) > 0
 
     # ------------------------------------------------------------------
     # Point reads

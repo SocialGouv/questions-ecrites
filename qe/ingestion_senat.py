@@ -37,7 +37,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import BinaryIO
+from typing import IO
 
 from qe.ingestion_an import (
     IngestStats,
@@ -170,7 +170,7 @@ class _PartialQ:
 # ---------------------------------------------------------------------------
 
 
-def parse_senat_sql_dump(sql_file: BinaryIO) -> list[ParsedQuestion]:  # noqa: C901
+def parse_senat_sql_dump(sql_file: IO[bytes]) -> list[ParsedQuestion]:  # noqa: C901
     """Stream-parse a Sénat pg_dump file, returning QE questions for legs 14–17.
 
     Performs a single pass over the dump collecting:

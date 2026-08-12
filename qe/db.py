@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from typing import Iterator, Sequence
+from typing import Iterator, Sequence, cast
 
 from sqlalchemy import create_engine, delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import CursorResult, Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from qe.models import (
@@ -141,7 +141,7 @@ def delete_manifest_under_prefix(path_prefix: str) -> int:
         result = session.execute(
             delete(IngestManifest).where(IngestManifest.path.like(f"{path_prefix}%"))
         )
-        return result.rowcount
+        return cast(CursorResult, result).rowcount
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +179,6 @@ def delete_chunk_cache(strategy: str, document_hash: str) -> None:
         )
 
 
-
 def delete_chunk_cache_for_document_hashes(document_hashes: Sequence[str]) -> int:
     """Delete chunk_cache rows for the provided document hashes (all strategies).
 
@@ -192,4 +191,4 @@ def delete_chunk_cache_for_document_hashes(document_hashes: Sequence[str]) -> in
         result = session.execute(
             delete(ChunkCache).where(ChunkCache.document_hash.in_(hashes))
         )
-        return result.rowcount
+        return cast(CursorResult, result).rowcount
