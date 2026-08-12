@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Embed parliamentary answers from PostgreSQL into pgvector.
 
-Reads answers from the `reponses` table (populated by ingest_an_legacy.py or
+Reads answers from the `reponses` table (populated by ingest_an.py or
 ingest_senat.py), generates embeddings using ``texte_reponse``, and upserts the
 result into the `vec_answers_opendata` pgvector table.
 
@@ -21,7 +21,7 @@ Usage:
 
 Requires:
     - ALBERT_API_KEY environment variable set
-    - A running PostgreSQL with ingested answers (run ingest_an_legacy.py / ingest_senat.py first)
+    - A running PostgreSQL with ingested answers (run ingest_an.py / ingest_senat.py first)
 """
 
 from __future__ import annotations

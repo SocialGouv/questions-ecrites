@@ -515,7 +515,7 @@ def get_question(question_id: str) -> QuestionResponse:
     Checks the database first.  For Sénat questions absent from the database,
     the Sénat website is scraped and the result is upserted (``fetched_now=true``).
     AN questions are only available through the daily bulk archive refresh
-    (``scripts/download_an_legacy.py --ingest``).
+    (``scripts/download_an.py --ingest``).
 
     Args:
         question_id: Composite question ID, e.g. ``AN-17-QE-15535``.
@@ -543,7 +543,7 @@ def get_question(question_id: str) -> QuestionResponse:
             detail=(
                 f"Question '{question_id}' not found in the database. "
                 "AN questions are updated via the daily bulk archive refresh; "
-                "run scripts/download_an_legacy.py --legislature 17 --ingest."
+                "run scripts/download_an.py --legislature 17 --ingest."
             ),
         )
 

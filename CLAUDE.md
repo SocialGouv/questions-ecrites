@@ -76,7 +76,7 @@ this repo.
 | ----------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `vec_office_responsibilities` | Office chunks (responsibilities + keywords) | `scripts/ingest_office_responsibilities.py`                                                            |
 | `vec_questions_opendata`      | Embedded parliamentary questions            | `scripts/embed_questions.py`                                                                           |
-| `vec_answers_opendata`        | Embedded parliamentary answers (Reponse)    | `scripts/embed_answers.py`, auto-called by `scripts/ingest_an_legacy.py` and `scripts/ingest_senat.py` |
+| `vec_answers_opendata`        | Embedded parliamentary answers (Reponse)    | `scripts/embed_answers.py`, auto-called by `scripts/ingest_an.py` and `scripts/ingest_senat.py` |
 
 Row IDs in all tables are deterministic UUID strings derived from SHA-256 hashes (see `qe/hashing.py`). Use `stable_question_point_id(question_id)` to resolve a question's vector row ID, and `stable_answer_point_id(reponse_id)` for answers.
 

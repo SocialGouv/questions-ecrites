@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Ingest AN legacy question ZIP archives (XIV and XV legislatures).
+"""Ingest AN question ZIP archives (legislature 14 onward).
 
-Processes the ZIP archives downloaded by download_an_legacy.py and upserts
+Processes the ZIP archives downloaded by download_an.py and upserts
 questions into PostgreSQL, then embeds newly ingested answers into pgvector.
 
 Usage:
-    poetry run python scripts/ingest_an_legacy.py --dir data/an_archives/
-    poetry run python scripts/ingest_an_legacy.py --dir data/an_archives/ --dry-run
-    poetry run python scripts/ingest_an_legacy.py --dir data/an_archives/ --skip-embed
+    poetry run python scripts/ingest_an.py --dir data/an_archives/
+    poetry run python scripts/ingest_an.py --dir data/an_archives/ --dry-run
+    poetry run python scripts/ingest_an.py --dir data/an_archives/ --skip-embed
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ def _dry_run_zip(zip_path: Path) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Ingest AN legacy question ZIP archives into PostgreSQL.",
+        description="Ingest AN question ZIP archives into PostgreSQL.",
     )
     parser.add_argument(
         "--dir",

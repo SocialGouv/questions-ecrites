@@ -16,10 +16,10 @@ poetry run alembic upgrade head
 
 ```bash
 # Download ZIP archives for legislatures XIV–XVII (--legislature 17 for one only)
-poetry run python scripts/download_an_legacy.py --dir data/an_archives/
+poetry run python scripts/download_an.py --dir data/an_archives/
 
 # Parse archives → PostgreSQL; auto-embeds newly ingested answers into pgvector
-poetry run python scripts/ingest_an_legacy.py --dir data/an_archives/
+poetry run python scripts/ingest_an.py --dir data/an_archives/
 ```
 
 Legislature XVII is a live archive — re-download periodically to pick up new questions and answers.
