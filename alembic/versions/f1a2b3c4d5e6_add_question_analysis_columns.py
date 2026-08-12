@@ -10,6 +10,12 @@ None of these columns are required for the app to work — they are
 additive structured metadata. NULL means "not yet analysed" or "the
 pattern did not match on this row"; consumers must degrade gracefully
 to the full `texte_question` when a column is NULL.
+
+`est_rappel` is NOT NULL DEFAULT FALSE on a ~260k-row table, which would
+be alarming on an older PostgreSQL. It is not here: since 11, a DEFAULT
+that is not volatile is recorded in the catalog and materialised lazily
+on read, so ADD COLUMN stays metadata-only — ACCESS EXCLUSIVE is held for
+that catalog update alone, with no table rewrite and no scan. We run 16.
 """
 
 from collections.abc import Sequence
