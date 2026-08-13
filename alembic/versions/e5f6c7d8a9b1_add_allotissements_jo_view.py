@@ -28,8 +28,7 @@ On the 13 506 groups this view exposes (as of ingestion 2026-07-28),
 a two-LLM cross-validation on leg 17 (815 groups × Mistral-medium +
 GPT-oss-120b via Albert) gave ~98 % of groups classified as legitimate
 thematic allotments, ~2 % as batch admin (ministry applied a template
-to unrelated questions).  See docs/rapport_performance_v2.md for the
-full audit trail.
+to unrelated questions).
 
 Revision ID: e5f6c7d8a9b1
 Revises: a9b0c1d2e3f4
