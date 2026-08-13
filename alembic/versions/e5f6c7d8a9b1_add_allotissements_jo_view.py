@@ -65,36 +65,10 @@ GROUP BY r.id, r.source, r.date_reponse_jo, r.no_publication,
 HAVING COUNT(q.id) >= 2
 """
 
-# NOTE: no colon-digit sequence in these strings. `op.execute()` hands the
-# statement to SQLAlchemy's `text()`, which reads `:12` as a bind parameter
-# named "12" and aborts with "A value is required for bind parameter '12'".
-# The slice notation these comments used to spell out is written in words
-# instead — `COMMENT ON` takes no parameters, so there is nothing to bind.
-VIEW_COMMENT = (
-    "Allotissements du Journal Officiel — groupes de questions écrites "
-    "ayant reçu exactement le même texte de réponse dans le même "
-    "numéro JO. Généré par déduction : reponse_id = AN-{date}-{les 12 "
-    "premiers caractères du sha1 du texte} à l'ingestion "
-    "(qe/ingestion_an.py). Règle validée contre les astérisques du PDF "
-    "officiel du JO. Cross-validation par 2 LLM sur leg 17 = ~98 % vrais "
-    "allotissements. Voir docs/rapport_performance_v2.md."
-)
-
-REPONSES_COMMENT = (
-    "Une ligne par texte de réponse distinct publié au JO. L'id est "
-    "synthétique : AN-{YYYYMMDD}-{les 12 premiers caractères du sha1 du "
-    "texte de réponse}. Plusieurs questions peuvent référencer le même "
-    "reponse_id (allotissement). Voir la VUE allotissements_jo pour les "
-    "groupes ≥ 2 questions."
-)
-
 
 def upgrade() -> None:
     op.execute(VIEW_DDL)
-    op.execute(f"COMMENT ON VIEW allotissements_jo IS '{VIEW_COMMENT.replace(chr(39), chr(39)*2)}'")
-    op.execute(f"COMMENT ON TABLE reponses IS '{REPONSES_COMMENT.replace(chr(39), chr(39)*2)}'")
 
 
 def downgrade() -> None:
-    op.execute("COMMENT ON TABLE reponses IS NULL")
     op.execute("DROP VIEW IF EXISTS allotissements_jo")
