@@ -20,7 +20,7 @@ d'abord les libellés bruts + une provenance, on créera le lien FK plus
 tard une fois qu'on aura étendu le référentiel.
 
 Revision ID: c1d2e3f4a5b6
-Revises: a9b0c1d2e3f4
+Revises: d5a1c2f3e4b6
 Create Date: 2026-07-28
 """
 
@@ -32,7 +32,7 @@ from alembic import op
 
 
 revision: str = "c1d2e3f4a5b6"
-down_revision: Union[str, Sequence[str], None] = "62ff467c436e"
+down_revision: Union[str, Sequence[str], None] = "d5a1c2f3e4b6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
