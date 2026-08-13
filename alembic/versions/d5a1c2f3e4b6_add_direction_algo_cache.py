@@ -19,7 +19,7 @@ request would be prohibitively slow — hence a cache. This migration
 only adds the columns; scripts and wiring live in the qe-front repo.
 
 Revision ID: d5a1c2f3e4b6
-Revises: a9b0c1d2e3f4
+Revises: e5f6c7d8a9b1
 Create Date: 2026-07-18
 """
 
@@ -30,7 +30,7 @@ from alembic import op
 
 
 revision: str = "d5a1c2f3e4b6"
-down_revision: Union[str, Sequence[str], None] = "62ff467c436e"
+down_revision: Union[str, Sequence[str], None] = "e5f6c7d8a9b1"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
