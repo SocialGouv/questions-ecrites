@@ -24,6 +24,7 @@ Key conventions:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import zipfile
@@ -451,6 +452,9 @@ def _parse_an_question_element(  # noqa: C901
     #   1. <teteAnalyse>                       (present on all formats)
     #   2. <analyses><analyse>…</analyse>…</   (modern format, XVI–XVII)
     #   3. <ANALYSE><ANA>…</ANA>…</ANALYSE>    (legacy uppercase format)
+    #   4. <rubrique>                          (broad topic — last-resort
+    #                                           fallback so the question
+    #                                           never ends up with a blank title)
     #
     # Without step 2, ~18 700 AN XVI and ~6 750 AN XVII questions end up
     # with objet=NULL because their teteAnalyse is empty and the legacy
@@ -463,6 +467,7 @@ def _parse_an_question_element(  # noqa: C901
             _t(idx, "teteAnalyse")
             or _t(idx, "analyses", "analyse")
             or _t(idx, "ANALYSE", "ANA")
+            or _t(idx, "rubrique")
         )
 
     # Response
@@ -486,14 +491,35 @@ def _parse_an_question_element(  # noqa: C901
         except ValueError:
             pass
 
-    # Use the question ID directly as the response ID (1-per-question mapping).
-    # The date+page-based scheme (AN-YYYYMMDD-page) grouped questions by JO
-    # publication date alone, creating false allotissement clusters.
+    # Real allotissement = questions answered with EXACTLY the same
+    # response text in the same JO issue. That's how the JO PDF itself
+    # signals grouped questions (asterisks on author names in the PDF
+    # table of contents).
+    #
+    # Cross-checked against `jo_anq_202310.pdf` (JO 2023-03-07):
+    # - QE5369 (obligation vaccinale, isolated in PDF, no asterisk):
+    #     sha1(texte_reponse)[:12] = "28e7763b91e3"
+    # - QE5690, 5834, 5835, 5839, 5843 (5 kiné questions with asterisks):
+    #     sha1(texte_reponse)[:12] = "9a145bd90f27" (all identical)
+    # Two questions share a reponse_id iff their texte_reponse hash and
+    # date_reponse_jo both match — exactly the JO's own grouping rule.
+    #
+    # WARNING: the previous scheme `AN-{date}-{page_reponse_jo}` was broken
+    # because `pageJO` in the XML is the starting page of the "Réponses"
+    # section of the whole JO issue, NOT the individual response page —
+    # so all QE from the same JO issue got the same page and were falsely
+    # grouped into massive fake allotments.
     reponse_id: str | None = None
     no_publication: str | None = None
     if texte_reponse:
-        reponse_id = qid
-        no_publication = "QE"
+        if date_reponse:
+            no_publication = date_reponse.strftime("%Y%m%d")
+            text_hash = hashlib.sha1(texte_reponse.encode("utf-8")).hexdigest()[:12]
+            reponse_id = f"AN-{no_publication}-{text_hash}"
+        else:
+            # Fallback — we lose the allotment info but keep the reponse row
+            reponse_id = qid
+            no_publication = "QE"
 
     return ParsedQuestion(
         id=qid,

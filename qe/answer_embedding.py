@@ -179,8 +179,14 @@ def embed_answers(  # noqa: C901
         "Probing embedding dimension with first batch (%d answer(s))...",
         len(first_batch_texts),
     )
-    first_embeddings = embedder.embed_batch(first_batch_texts)
-    vector_size = len(first_embeddings[0])
+    first_embeddings = embedder.embed_batch_partial(first_batch_texts)
+    probe = next((e for e in first_embeddings if e is not None), None)
+    if probe is None:
+        raise ValueError(
+            "Every text in the probe batch was rejected by the content "
+            "guardrail — cannot determine the embedding dimension."
+        )
+    vector_size = len(probe)
 
     existing_dim = vector_store.get_vector_size(collection)
     if existing_dim is None:
@@ -194,6 +200,7 @@ def embed_answers(  # noqa: C901
         )
 
     upserted = 0
+    blocked = 0
     batches = list(batched(to_embed, batch_size))
 
     with tqdm(total=len(to_embed), unit="a", desc="Embedding answers") as progress:
@@ -203,12 +210,21 @@ def embed_answers(  # noqa: C901
             else:
                 if rate_limiter:
                     rate_limiter.acquire(1)
-                embeddings = embedder.embed_batch(
+                embeddings = embedder.embed_batch_partial(
                     [a.texte_reponse[:TEXT_MAX_CHARS] for a in batch]
                 )
 
             points = []
             for answer, embedding in zip(batch, embeddings, strict=True):
+                if embedding is None:
+                    # Rejected by the content guardrail — skip this answer
+                    # but keep embedding the rest of the corpus.
+                    blocked += 1
+                    logger.warning(
+                        "Answer %s skipped (blocked by content guardrail).",
+                        answer.id,
+                    )
+                    continue
                 date_str = (
                     answer.date_reponse_jo.isoformat()
                     if answer.date_reponse_jo
@@ -235,14 +251,17 @@ def embed_answers(  # noqa: C901
                     }
                 )
 
-            vector_store.upsert_points(collection, points)
-            upserted += len(batch)
+            if points:
+                vector_store.upsert_points(collection, points)
+            upserted += len(points)
             progress.update(len(batch))
 
     logger.info(
-        "Done — %d upserted, %d skipped (up-to-date), %d stale removed.",
+        "Done — %d upserted, %d skipped (up-to-date), %d blocked by "
+        "guardrail, %d stale removed.",
         upserted,
         skipped,
+        blocked,
         len(stale_ids),
     )
     return EmbedStats(
