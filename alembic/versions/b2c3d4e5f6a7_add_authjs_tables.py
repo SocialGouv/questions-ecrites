@@ -34,7 +34,7 @@ from typing import Union
 from alembic import op
 
 revision: str = "b2c3d4e5f6a7"
-down_revision: Union[str, Sequence[str], None] = "f1a2b3c4d5e6"
+down_revision: Union[str, Sequence[str], None] = "e7f8a9b0c1d2"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
