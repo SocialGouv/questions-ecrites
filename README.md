@@ -44,16 +44,6 @@ poetry run python scripts/embed_questions.py
 
 Filters (combinable): `--filter-status EN_COURS|REPONDU`, `--ministry TEXT`, `--source AN|SENAT`, `--legislature N`, `--date-from YYYY-MM-DD`, `--date-to YYYY-MM-DD`.
 
-## Ingest office responsibilities
-
-Place XLSX files in `data/office_responsibilities/` (columns: `direction`, `office_id`, `office_name`, `responsibilities`, `keywords`), then:
-
-```bash
-poetry run python scripts/ingest_office_responsibilities.py
-```
-
-Unchanged files are skipped automatically.
-
 ## Assign a question
 
 ```bash

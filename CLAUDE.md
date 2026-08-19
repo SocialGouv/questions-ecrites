@@ -43,7 +43,6 @@ qe/                         # Main package (no __init__.py)
 └── office_ingestion.py     # parse_office_xlsx(), ingest_office_xlsx()
 
 scripts/
-├── ingest_office_responsibilities.py  # Ingest office XLSX files into pgvector
 ├── embed_questions.py                 # Embed questions from PostgreSQL into pgvector (vec_questions_opendata)
 ├── embed_answers.py                   # Embed answers from PostgreSQL into pgvector (vec_answers_opendata)
 ├── assign_qe_to_office.py             # CLI: assign a question to the most relevant office
@@ -53,7 +52,6 @@ scripts/
 └── reset_dbs.py                       # Reset pgvector tables + PostgreSQL state
 
 data/
-├── office_responsibilities/  # Input: office responsibility XLSX files
 └── qe_no_answers/            # Input: questions to assign
 ```
 
@@ -74,7 +72,7 @@ this repo.
 
 | Table                         | Contents                                    | Populated by                                                                                           |
 | ----------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `vec_office_responsibilities` | Office chunks (responsibilities + keywords) | `scripts/ingest_office_responsibilities.py`                                                            |
+| `vec_office_responsibilities` | Office chunks (responsibilities + keywords) | no automated ingestion currently (`scripts/ingest_office_responsibilities.py` removed as unused)       |
 | `vec_questions_opendata`      | Embedded parliamentary questions            | `scripts/embed_questions.py`                                                                           |
 | `vec_answers_opendata`        | Embedded parliamentary answers (Reponse)    | `scripts/embed_answers.py`, auto-called by `scripts/ingest_an.py` and `scripts/ingest_senat.py` |
 
