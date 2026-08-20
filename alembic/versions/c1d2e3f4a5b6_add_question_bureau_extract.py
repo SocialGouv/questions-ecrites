@@ -59,6 +59,12 @@ def upgrade() -> None:
             "bureau_full", sa.Text(), nullable=True,
             comment="Concaténation seg 3+ (ex '3e - 4e - 5e' pour les postes longs)"
         ),
+        # `source_etape_id` is a soft reference, deliberately NOT a foreign
+        # key. `reponses_extract_etapes` is populated by the MIN15 / Réponses
+        # tooling and no migration in this repo creates it — an FK would make
+        # this migration, and therefore `alembic upgrade head`, fail on every
+        # database that does not happen to carry that table, fresh ones
+        # included. The column keeps its provenance/debug value regardless.
         sa.Column(
             "source_etape_id", sa.Integer(), nullable=True,
             comment="FK vers l'étape MIN15 d'origine (pour provenance/debug)"
@@ -71,12 +77,6 @@ def upgrade() -> None:
             server_default=sa.text("NOW()"),
         ),
         sa.ForeignKeyConstraint(["question_id"], ["questions.id"], ondelete="CASCADE"),
-        # `source_etape_id` is a soft reference, deliberately NOT a foreign
-        # key. `reponses_extract_etapes` is populated by the MIN15 / Réponses
-        # tooling and no migration in this repo creates it — an FK would make
-        # this migration, and therefore `alembic upgrade head`, fail on every
-        # database that does not happen to carry that table, fresh ones
-        # included. The column keeps its provenance/debug value regardless.
         # Une ligne par (QE, direction) : si la QE a été passée à plusieurs
         # directions, on garde la trace de chacune.
         sa.UniqueConstraint("question_id", "direction_txt",
