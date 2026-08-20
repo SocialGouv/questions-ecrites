@@ -31,7 +31,7 @@ thematic allotments, ~2 % as batch admin (ministry applied a template
 to unrelated questions).
 
 Revision ID: e5f6c7d8a9b1
-Revises: a9b0c1d2e3f4
+Revises: b2c3d4e5f6a7
 Create Date: 2026-07-28
 """
 
