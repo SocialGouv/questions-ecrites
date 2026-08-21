@@ -49,7 +49,8 @@ deploy:argocd:
   script:
     - git clone --depth 1 "https://oauth2:${ARGO_REPO_TOKEN}@pic.sg.social.gouv.fr/socialgouv/data-ia/data-platform/data-platform-argocd.git"
     - cd data-platform-argocd
-    - sed -i -E "s|(image. pic-registry.sg.social.gouv.fr/socialgouv/data-ia/data-platform/questions-ecrites-back).*|\1:${CI_COMMIT_SHORT_SHA}|" questions-ecrites/deployment.yaml questions-ecrites/cronjob-ingestion.yaml
+    - test -f questions-ecrites/cronjob-ingestion.yaml || { echo "questions-ecrites/cronjob-ingestion.yaml not found in data-platform-argocd"; exit 1; }
+    - sed -i -E "s|(image: pic-registry.sg.social.gouv.fr/socialgouv/data-ia/data-platform/questions-ecrites-back).*|\1:${CI_COMMIT_SHORT_SHA}|" questions-ecrites/deployment.yaml questions-ecrites/cronjob-ingestion.yaml
     - git config user.name "ci-questions-ecrites-back"
     - git config user.email "ci@pic.sg.social.gouv.fr"
     - git add questions-ecrites/deployment.yaml questions-ecrites/cronjob-ingestion.yaml
