@@ -2,14 +2,13 @@
 
 ## Project overview
 
-Office assignment system for French parliamentary questions ("questions écrites"). Given unanswered parliamentary questions and responsibility descriptions of offices within French ministry directions, the system assigns each question to the most relevant office using semantic embeddings, vector search, and reranking.
+Ingestion and semantic search system for French parliamentary questions ("questions écrites"). Questions and answers are ingested from the Assemblée Nationale and Sénat open-data portals, embedded, and made searchable.
 
 **Pipeline:**
 
-1. **Ingest** office responsibilities (XLSX) → chunk → embed → store in pgvector (`vec_office_responsibilities` table)
-2. **Ingest** questions → parse → store in PostgreSQL → embed → store in pgvector (`vec_questions_opendata` table)
-3. **Assign** questions → fetch stored vector from pgvector → search offices → rerank → return ranked offices with relevance scores
-4. **Serve** assignments via HTTP API (`api/main.py` — FastAPI, `GET /api/questions/{question_id}/attributions`)
+1. **Ingest** questions → parse → store in PostgreSQL → embed → store in pgvector (`vec_questions_opendata` table)
+2. **Ingest** answers → parse → store in PostgreSQL → embed → store in pgvector (`vec_answers_opendata` table)
+3. **Serve** semantic search via HTTP API (`api/main.py` — FastAPI, `GET /api/questions/{question_id}/similar`)
 
 ## Project conventions
 
@@ -24,7 +23,7 @@ Office assignment system for French parliamentary questions ("questions écrites
 
 ```bash
 api/
-└── main.py                 # FastAPI server: GET /api/questions/{question_id}/attributions
+└── main.py                 # FastAPI server: GET /api/questions/{question_id}/similar
 
 qe/                         # Main package (no __init__.py)
 ├── clients/
@@ -32,27 +31,25 @@ qe/                         # Main package (no __init__.py)
 │   ├── pgvector_client.py  # PgvectorClient → pgvector-backed vector store
 │   ├── vector_store.py     # VectorStore Protocol — backend-agnostic interface
 │   └── rerank.py           # RerankClient → Albert reranking API
-├── assignment.py           # retrieve_candidates(), build_matches(), aggregate_matches(), match_question_to_offices()
+├── assignment.py           # retrieve_candidates(), rerank_candidates() — generic retrieval + reranking
 ├── chunking.py             # Chunk dataclass, Chunker protocol
 ├── config.py               # Settings dataclass, get_settings()
 ├── db.py                   # PostgreSQL: ingest_manifest + chunk_cache tables
 ├── documents.py            # load_documents(), read_document() (.txt/.pdf/.doc/.docx)
 ├── answer_embedding.py     # embed_answers() — embeds Reponse rows into vec_answers_opendata pgvector table
 ├── hashing.py              # stable_point_id(), stable_chunk_id(), stable_question_point_id(), stable_answer_point_id(), compute_content_hash()
-├── models.py               # SQLAlchemy models: Question, Reponse, QuestionStateChange, …
-└── office_ingestion.py     # parse_office_xlsx(), ingest_office_xlsx()
+└── models.py               # SQLAlchemy models: Question, Reponse, QuestionStateChange, …
 
 scripts/
 ├── embed_questions.py                 # Embed questions from PostgreSQL into pgvector (vec_questions_opendata)
 ├── embed_answers.py                   # Embed answers from PostgreSQL into pgvector (vec_answers_opendata)
-├── assign_qe_to_office.py             # CLI: assign a question to the most relevant office
-├── eval_office_assignment.py          # Evaluate assignment quality against a ground-truth XLSX
 ├── dump_qdrant.py                     # One-time: export Qdrant collections → JSONL
 ├── load_pgvector.py                   # One-time: import JSONL dump → pgvector tables
+├── find_similar_questions.py          # CLI: semantically similar questions/answers
 └── reset_dbs.py                       # Reset pgvector tables + PostgreSQL state
 
 data/
-└── qe_no_answers/            # Input: questions to assign
+└── qe_no_answers/            # Input files for find_similar_questions.py --file
 ```
 
 ## External services
@@ -72,7 +69,6 @@ this repo.
 
 | Table                         | Contents                                    | Populated by                                                                                           |
 | ----------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `vec_office_responsibilities` | Office chunks (responsibilities + keywords) | no automated ingestion currently (`scripts/ingest_office_responsibilities.py` removed as unused)       |
 | `vec_questions_opendata`      | Embedded parliamentary questions            | `scripts/embed_questions.py`                                                                           |
 | `vec_answers_opendata`        | Embedded parliamentary answers (Reponse)    | `scripts/embed_answers.py`, auto-called by `scripts/ingest_an.py` and `scripts/ingest_senat.py` |
 
@@ -84,25 +80,16 @@ Row IDs in all tables are deterministic UUID strings derived from SHA-256 hashes
 ALBERT_API_KEY=... poetry run uvicorn api.main:app --reload
 ```
 
-`GET /api/questions/{question_id}/attributions?top_k=3` — returns the top-N office suggestions for a question. The question's embedding is fetched from `questions_opendata` (no embedding API call); only the Albert reranker is called. Each suggestion includes `rank`, `office_id`, `office_name`, `direction`, `score` (aggregated rerank score), and `relevance` (absolute relevance as a percentage, 0.0–100.0).
-
-**Relevance:** `relevance` is a blend of two signals (70 % absolute + 30 % relative). The absolute component is `sigmoid(best_chunk_score) × 100` — the model's raw judgment, independent of other results. The relative component is a pool-median-centred linear adjustment: each logit above the pool median adds ~6 pp, each logit below subtracts ~6 pp. The blend keeps tightly-clustered scores close together while making real score gaps visible. A question with no good match yields a low relevance for every office.
+`GET /api/questions/{question_id}/similar?collection=questions|answers&top_k=10` — returns semantically similar questions or answers. The source question's embedding is fetched from `questions_opendata` (no embedding API call); results are reranked with Albert before being returned.
 
 Configurable via env vars: `ALBERT_API_KEY` (required), `CORS_ORIGINS` (default `http://localhost:3000`).
 
 ## Database schema (Alembic)
 
 - `ingest_manifest(path PK, document_hash, updated_at)` — tracks ingested files for incremental updates
-- `vec_office_responsibilities`, `vec_questions_opendata`, `vec_answers_opendata` — pgvector tables (1024-dim HNSW index)
+- `vec_questions_opendata`, `vec_answers_opendata` — pgvector tables (1024-dim HNSW index)
 
 Run migrations: `poetry run alembic upgrade head`
-
-## Office chunking
-
-Each office row in an XLSX produces 2 vector chunks:
-
-- `responsibilities` — `"{office_name}\n{responsibilities}"` — semantic coverage
-- `keywords` — `"{office_name}: {keywords}"` — exact-term matching via embedding
 
 ## Testing
 

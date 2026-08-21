@@ -1,6 +1,6 @@
 # QE — Questions Écrites
 
-Assigns French parliamentary written questions to the most relevant ministry office. Questions are downloaded directly from the Assemblée Nationale and Sénat open-data portals, ingested into PostgreSQL, embedded into pgvector, then matched to office responsibility descriptions using semantic search and Albert reranking.
+Ingests French parliamentary written questions and answers. Questions are downloaded directly from the Assemblée Nationale and Sénat open-data portals, ingested into PostgreSQL, and embedded into pgvector for semantic search (see "Find similar questions" below).
 
 ## Installation
 
@@ -43,22 +43,6 @@ poetry run python scripts/embed_questions.py
 ```
 
 Filters (combinable): `--filter-status EN_COURS|REPONDU`, `--ministry TEXT`, `--source AN|SENAT`, `--legislature N`, `--date-from YYYY-MM-DD`, `--date-to YYYY-MM-DD`.
-
-## Assign a question
-
-```bash
-poetry run python scripts/assign_qe_to_office.py --question "Quel est le montant du RSA ?"
-```
-
-Returns a ranked JSON list of offices. Options: `--top-k 20`, `--top-offices 5`.
-
-## Evaluate assignment quality
-
-Measures Hit@1/3/5 and MRR against a ground-truth XLSX (`question_id`, `question_text`, `expected_office_id`):
-
-```bash
-poetry run python scripts/eval_office_assignment.py --input data/qe_attributions_DGCS.xlsx
-```
 
 ## Find similar questions
 
