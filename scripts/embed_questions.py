@@ -44,10 +44,11 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 from itertools import islice
+from typing import Iterator
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.orm import load_only
+from sqlalchemy.orm import Session, load_only
 from tqdm import tqdm
 
 from qe import db
@@ -211,14 +212,14 @@ def _content_hash(text: str) -> str:
 
 
 def _iter_questions(
-    session,
+    session: Session,
     filter_status: str | None,
     ministry: str | None,
     source: str | None,
     legislature: int | None,
     date_from: date | None,
     date_to: date | None,
-):
+) -> Iterator[Question]:
     """Stream matching questions from PostgreSQL via a server-side cursor.
 
     Only the columns the embedding pipeline actually reads are fetched —
