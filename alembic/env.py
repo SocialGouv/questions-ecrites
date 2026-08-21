@@ -65,7 +65,6 @@ _QE_FRONT_TABLES = {
     "sous_directions",
     "bureaux",
     "question_real_attributions",
-    "question_attribution_suggestions",
     "question_similar_suggestions",
     "suggestion_feedback",
     "correction_feedback",
