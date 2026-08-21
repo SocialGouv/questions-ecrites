@@ -47,6 +47,7 @@ from itertools import islice
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.orm import load_only
 from tqdm import tqdm
 
 from qe import db
@@ -67,6 +68,23 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_COLLECTION = "questions_opendata"
 DEFAULT_BATCH_SIZE = 32
+
+# Server-side cursor page size for _iter_questions — independent of
+# --batch-size (the embedding API batch size). Only these columns are
+# fetched: the corpus has grown past 94k rows with several large free-text
+# columns (analyses, contexte_extrait, themes, ...) that this pipeline never
+# reads, so loading full rows was the dominant memory cost, not batch size.
+DB_PAGE_SIZE = 500
+_EMBED_COLUMNS = (
+    Question.id,
+    Question.texte_question,
+    Question.etat_question,
+    Question.source,
+    Question.legislature,
+    Question.auteur_nom,
+    Question.ministre_attributaire_libelle,
+    Question.date_publication_jo,
+)
 
 
 @dataclass(frozen=True)
@@ -192,16 +210,24 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _load_questions(
+def _iter_questions(
+    session,
     filter_status: str | None,
     ministry: str | None,
     source: str | None,
     legislature: int | None,
     date_from: date | None,
     date_to: date | None,
-) -> list[Question]:
-    """Fetch questions from PostgreSQL, applying all active filters."""
-    stmt = select(Question)
+):
+    """Stream matching questions from PostgreSQL via a server-side cursor.
+
+    Only the columns the embedding pipeline actually reads are fetched —
+    the corpus has grown past 94k rows and several unused columns
+    (analyses, contexte_extrait, themes, ...) hold large free text, so
+    materializing full rows was the dominant memory cost. Caller must keep
+    the session open while iterating.
+    """
+    stmt = select(Question).options(load_only(*_EMBED_COLUMNS))
 
     if filter_status:
         stmt = stmt.where(Question.etat_question == filter_status)
@@ -221,8 +247,8 @@ def _load_questions(
     if date_to is not None:
         stmt = stmt.where(Question.date_publication_jo <= date_to)
 
-    with db.get_session() as session:
-        return list(session.execute(stmt).scalars().all())
+    stmt = stmt.execution_options(yield_per=DB_PAGE_SIZE, stream_results=True)
+    yield from session.execute(stmt).scalars()
 
 
 def _load_all_question_ids() -> set[str]:
@@ -296,21 +322,6 @@ def embed_questions(  # noqa: C901
         batch_size: Number of questions per embedding API call.
         rate_limiter: Optional global rate limiter (API calls/min).
     """
-    questions = _load_questions(
-        filter_status, ministry, source, legislature, date_from, date_to
-    )
-    if not questions:
-        logger.warning(
-            "No questions found (status=%s, ministry=%r, source=%s, legislature=%s).",
-            filter_status,
-            ministry,
-            source,
-            legislature,
-        )
-        return
-
-    logger.info("Loaded %d question(s) from PostgreSQL.", len(questions))
-
     existing = _load_existing_points(vector_store, collection)
 
     # --- Stale point cleanup ---
@@ -328,126 +339,133 @@ def embed_questions(  # noqa: C901
             logger.debug("  Removed stale point for question %s.", qid)
         logger.info("  Done removing stale points.")
 
-    # --- Determine which questions need (re-)embedding ---
-    to_embed: list[Question] = []
+    # --- Stream questions, filter, embed and upsert in a single pass ---
+    # Never materializes the full corpus (or even the full to-embed subset)
+    # in memory — only one DB page (DB_PAGE_SIZE rows) and one embedding
+    # batch are alive at a time.
+    seen = 0
     skipped = 0
     empty = 0
-
-    for q in questions:
-        text = q.texte_question
-        if not text or not text.strip():
-            empty += 1
-            logger.debug("Skipping empty question %s.", q.id)
-            continue
-        cached = existing.get(q.id)
-        if cached is not None:
-            cached_model, cached_hash = cached
-            if cached_model == embedding_model and cached_hash == _content_hash(text):
-                skipped += 1
-                continue
-        to_embed.append(q)
-
-    logger.info(
-        "%d to embed, %d already up-to-date (skipped), %d empty.",
-        len(to_embed),
-        skipped,
-        empty,
-    )
-
-    if not to_embed:
-        logger.info("Nothing to do.")
-        return
-
-    # --- Probe first batch to get vector dimension, create collection if needed ---
-    first_batch_texts = [q.texte_question for q in to_embed[:batch_size]]
-    if rate_limiter:
-        rate_limiter.acquire(1)
-    logger.info(
-        "Probing embedding dimension with first batch (%d question(s))...",
-        len(first_batch_texts),
-    )
-    first_embeddings = embedder.embed_batch_partial(first_batch_texts)
-    probe = next((e for e in first_embeddings if e is not None), None)
-    if probe is None:
-        raise ValueError(
-            "Every text in the probe batch was rejected by the content "
-            "guardrail — cannot determine the embedding dimension."
-        )
-    vector_size = len(probe)
-
-    if not vector_store.collection_exists(collection):
-        vector_store.create_collection(collection, vector_size=vector_size)
-        logger.info("Created collection '%s' (dim=%d).", collection, vector_size)
-
-    # --- Batch embed + upsert with progress bar ---
     upserted = 0
     blocked = 0
-    batches = list(_batched(to_embed, batch_size))
+    vector_size: int | None = None
+    collection_ready = vector_store.collection_exists(collection)
 
-    with tqdm(total=len(to_embed), unit="q", desc="Embedding") as progress:
-        for batch_idx, batch in enumerate(batches):
-            texts = [q.texte_question for q in batch]
+    with db.get_session() as session:
+        stream = _iter_questions(
+            session, filter_status, ministry, source, legislature, date_from, date_to
+        )
 
-            # Use pre-computed embeddings for the first batch.
-            if batch_idx == 0:
-                embeddings = first_embeddings
-            else:
+        with tqdm(unit="q", desc="Embedding") as progress:
+            for raw_batch in _batched(stream, batch_size):
+                seen += len(raw_batch)
+                batch: list[Question] = []
+                for q in raw_batch:
+                    text = q.texte_question
+                    if not text or not text.strip():
+                        empty += 1
+                        logger.debug("Skipping empty question %s.", q.id)
+                        continue
+                    cached = existing.get(q.id)
+                    if cached is not None:
+                        cached_model, cached_hash = cached
+                        if (
+                            cached_model == embedding_model
+                            and cached_hash == _content_hash(text)
+                        ):
+                            skipped += 1
+                            continue
+                    batch.append(q)
+
+                progress.update(len(raw_batch))
+
+                if not batch:
+                    continue
+
+                texts = [q.texte_question for q in batch]
                 if rate_limiter:
                     rate_limiter.acquire(1)
                 embeddings = embedder.embed_batch_partial(texts)
 
-            points = []
-            for question, embedding in zip(batch, embeddings, strict=True):
-                if embedding is None:
-                    # Rejected by the content guardrail — skip this question
-                    # but keep embedding the rest of the corpus.
-                    blocked += 1
-                    logger.warning(
-                        "Question %s skipped (blocked by content guardrail).",
-                        question.id,
+                if vector_size is None:
+                    probe = next((e for e in embeddings if e is not None), None)
+                    if probe is not None:
+                        vector_size = len(probe)
+                        if not collection_ready:
+                            vector_store.create_collection(collection, vector_size=vector_size)
+                            collection_ready = True
+                            logger.info(
+                                "Created collection '%s' (dim=%d).", collection, vector_size
+                            )
+
+                points = []
+                for question, embedding in zip(batch, embeddings, strict=True):
+                    if embedding is None:
+                        # Rejected by the content guardrail — skip this question
+                        # but keep embedding the rest of the corpus.
+                        blocked += 1
+                        logger.warning(
+                            "Question %s skipped (blocked by content guardrail).",
+                            question.id,
+                        )
+                        continue
+                    date_str = (
+                        question.date_publication_jo.isoformat()
+                        if question.date_publication_jo
+                        else None
                     )
-                    continue
-                date_str = (
-                    question.date_publication_jo.isoformat()
-                    if question.date_publication_jo
-                    else None
-                )
-                text = question.texte_question
-                points.append(
-                    {
-                        "id": _question_point_id(question.id),
-                        "vector": embedding,
-                        "payload": {
-                            "kind": "question",
-                            "question_id": question.id,
-                            "embedding_model": embedding_model,
-                            "content_hash": _content_hash(text),
-                            "etat_question": question.etat_question,
-                            "source": question.source,
-                            "legislature": question.legislature,
-                            "texte_question": text[:2000],
-                            "texte_preview": make_preview(text),
-                            "auteur_nom": question.auteur_nom,
-                            # Snapshot at embedding time — can go stale if a reattribution happens later.
-                            "ministre_attributaire_libelle": question.ministre_attributaire_libelle,
-                            "date_publication_jo": date_str,
-                        },
-                    }
-                )
+                    text = question.texte_question
+                    points.append(
+                        {
+                            "id": _question_point_id(question.id),
+                            "vector": embedding,
+                            "payload": {
+                                "kind": "question",
+                                "question_id": question.id,
+                                "embedding_model": embedding_model,
+                                "content_hash": _content_hash(text),
+                                "etat_question": question.etat_question,
+                                "source": question.source,
+                                "legislature": question.legislature,
+                                "texte_question": text[:2000],
+                                "texte_preview": make_preview(text),
+                                "auteur_nom": question.auteur_nom,
+                                # Snapshot at embedding time — can go stale if a reattribution happens later.
+                                "ministre_attributaire_libelle": question.ministre_attributaire_libelle,
+                                "date_publication_jo": date_str,
+                            },
+                        }
+                    )
 
-            if points:
-                vector_store.upsert_points(collection, points)
-            upserted += len(points)
-            progress.update(len(batch))
+                if points:
+                    vector_store.upsert_points(collection, points)
+                upserted += len(points)
 
-    logger.info(
-        "Done — %d upserted, %d blocked by guardrail, "
-        "%d skipped (up-to-date), %d stale removed.",
-        upserted,
-        blocked,
-        skipped,
-        len(stale_ids),
-    )
+    if seen == 0:
+        logger.warning(
+            "No questions found (status=%s, ministry=%r, source=%s, legislature=%s).",
+            filter_status,
+            ministry,
+            source,
+            legislature,
+        )
+    elif upserted == 0 and blocked == 0:
+        logger.info(
+            "Nothing to do — %d question(s) seen, %d already up-to-date, %d empty.",
+            seen,
+            skipped,
+            empty,
+        )
+    else:
+        logger.info(
+            "Done — %d upserted, %d blocked by guardrail, "
+            "%d skipped (up-to-date), %d empty, %d stale removed.",
+            upserted,
+            blocked,
+            skipped,
+            empty,
+            len(stale_ids),
+        )
 
 
 def main() -> None:
