@@ -127,5 +127,3 @@ def rerank_candidates(
         scored.append((candidates[idx], float(score)))
 
     return sorted(scored, key=lambda x: -x[1])
-
-

@@ -41,10 +41,12 @@ _VECTOR_DIM = 1024
 def upgrade() -> None:
     """Upgrade schema."""
     op.drop_index(
-        "vec_office_responsibilities_hnsw_idx", table_name="vec_office_responsibilities"
+        "vec_office_responsibilities_hnsw_idx",
+        table_name="vec_office_responsibilities",
+        if_exists=True,
     )
-    op.drop_table("vec_office_responsibilities")
-    op.drop_table("question_attribution_suggestions")
+    op.drop_table("vec_office_responsibilities", if_exists=True)
+    op.drop_table("question_attribution_suggestions", if_exists=True)
 
 
 def downgrade() -> None:
@@ -75,7 +77,7 @@ def downgrade() -> None:
         sa.Column(
             "computed_at",
             sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
+            server_default=sa.text("now()"),
             nullable=False,
         ),
     )

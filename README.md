@@ -60,33 +60,11 @@ Options: `--collection questions_opendata|answers_opendata`, `--filter-status RE
 ALBERT_API_KEY=... poetry run uvicorn api.main:app --reload
 ```
 
-### `GET /api/questions/{question_id}/attributions?top_k=3`
-
-Returns the top-N office suggestions. The question's embedding is read from pgvector — no call to Socle IA is made.
-
-```json
-{
-  "question_id": "AN-17-QE-12345",
-  "attributions": [
-    {
-      "rank": 1,
-      "office_id": "...",
-      "office_name": "Sous-direction des affaires sociales",
-      "direction": "Direction générale du travail",
-      "score": 1.8432,
-      "relevance": 73.4
-    }
-  ]
-}
-```
-
-`relevance` is a 0–100 score blending an absolute signal (sigmoid of the Albert reranker logit) and a relative signal (deviation from the pool median). High values indicate a strong match regardless of the other candidates.
-
 ### `GET /api/questions/{question_id}/similar?collection=answers&top_k=10`
 
 Returns semantically similar items from another collection, reranked with Albert.
 
-- `collection`: `questions`, `answers`, or `offices`
+- `collection`: `questions` or `answers`
 - `top_k`: 1–50 (default 10)
 - `score_threshold`: optional minimum cosine similarity (0.0–1.0)
 
