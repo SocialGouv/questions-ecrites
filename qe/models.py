@@ -329,14 +329,6 @@ class IngestCursor(Base):
 _VECTOR_DIM = 1024
 
 
-class OfficeResponsibilitiesVec(Base):
-    __tablename__ = "vec_office_responsibilities"
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
-    vector: Mapped[list] = mapped_column(Vector(_VECTOR_DIM), nullable=False)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-
-
 class QuestionsOpendataVec(Base):
     __tablename__ = "vec_questions_opendata"
 

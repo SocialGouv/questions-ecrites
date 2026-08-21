@@ -5,7 +5,6 @@ connection config required.
 
 Collection name → SQL table mapping
 ------------------------------------
-office_responsibilities  →  vec_office_responsibilities
 questions_opendata       →  vec_questions_opendata
 answers_opendata         →  vec_answers_opendata
 
@@ -30,12 +29,10 @@ from sqlalchemy.engine import CursorResult
 from qe import db
 from qe.models import (
     AnswersOpendataVec,
-    OfficeResponsibilitiesVec,
     QuestionsOpendataVec,
 )
 
 _COLLECTION_MAP = {
-    "office_responsibilities": OfficeResponsibilitiesVec,
     "questions_opendata": QuestionsOpendataVec,
     "answers_opendata": AnswersOpendataVec,
 }
