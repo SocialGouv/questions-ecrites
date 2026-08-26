@@ -83,6 +83,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_questions_direction_algo_id", table_name="questions")
-    op.drop_column("questions", "direction_algo_computed_at")
-    op.drop_column("questions", "direction_algo_id")
+    # IF EXISTS for the same reason upgrade() is guarded: on a database
+    # that reached this revision via the old chain order (Atlas Sandbox),
+    # alembic's own bookkeeping is the only thing that says these objects
+    # belong to this migration — plain op.drop_* would error if downgrade
+    # is ever invoked from a state where upgrade() ran as a no-op.
+    op.execute("DROP INDEX IF EXISTS ix_questions_direction_algo_id")
+    op.execute(
+        """
+        ALTER TABLE questions
+          DROP COLUMN IF EXISTS direction_algo_computed_at,
+          DROP COLUMN IF EXISTS direction_algo_id
+        """
+    )
