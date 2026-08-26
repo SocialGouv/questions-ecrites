@@ -49,12 +49,20 @@ deploy:argocd:
   script:
     - git clone --depth 1 "https://oauth2:${ARGO_REPO_TOKEN}@pic.sg.social.gouv.fr/socialgouv/data-ia/data-platform/data-platform-argocd.git"
     - cd data-platform-argocd
-    - test -f questions-ecrites/cronjob-ingestion.yaml || { echo "questions-ecrites/cronjob-ingestion.yaml not found in data-platform-argocd"; exit 1; }
-    - test -f questions-ecrites/migration-job.yaml || { echo "questions-ecrites/migration-job.yaml not found in data-platform-argocd"; exit 1; }
-    - sed -i -E "s|(image: pic-registry.sg.social.gouv.fr/socialgouv/data-ia/data-platform/questions-ecrites-back).*|\1:${CI_COMMIT_SHORT_SHA}|" questions-ecrites/deployment.yaml questions-ecrites/cronjob-ingestion.yaml questions-ecrites/migration-job.yaml
+    # Every manifest that pins this image's tag. Kept as one list so all
+    # three stay in lockstep by construction — migration-job.yaml silently
+    # drifting out of this list is exactly what this pipeline was missing.
+    - MANIFESTS="questions-ecrites/deployment.yaml questions-ecrites/cronjob-ingestion.yaml questions-ecrites/migration-job.yaml"
+    - for f in $MANIFESTS; do test -f "$f" || { echo "$f not found in data-platform-argocd"; exit 1; }; done
+    - sed -i -E "s|(image: pic-registry.sg.social.gouv.fr/socialgouv/data-ia/data-platform/questions-ecrites-back).*|\1:${CI_COMMIT_SHORT_SHA}|" $MANIFESTS
+    # sed exits 0 even when the pattern matches nothing, so a silent no-op
+    # (e.g. the image name prefix changes) would otherwise push a partial,
+    # inconsistent update with no CI failure — assert every file actually
+    # got the new tag.
+    - for f in $MANIFESTS; do grep -q "questions-ecrites-back:${CI_COMMIT_SHORT_SHA}" "$f" || { echo "sed did not update the image tag in $f"; exit 1; }; done
     - git config user.name "ci-questions-ecrites-back"
     - git config user.email "ci@pic.sg.social.gouv.fr"
-    - git add questions-ecrites/deployment.yaml questions-ecrites/cronjob-ingestion.yaml questions-ecrites/migration-job.yaml
+    - git add $MANIFESTS
     - git diff --cached --quiet || (git commit -m "questions-ecrites-back:${CI_COMMIT_SHORT_SHA}" && git push origin main)
   rules:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"
