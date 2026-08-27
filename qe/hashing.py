@@ -8,6 +8,12 @@ from pathlib import Path
 from uuid import UUID
 
 
+def hash_file(path: Path) -> str:
+    """SHA-256 hash of a file's contents, read in chunks (not loaded fully into memory)."""
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
 def stable_point_id(path: Path) -> str:
     """Deterministic UUID for a document path."""
     digest = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()

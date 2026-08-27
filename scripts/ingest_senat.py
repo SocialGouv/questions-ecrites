@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import collections
-import hashlib
 import logging
 import sys
 import zipfile
@@ -24,6 +23,7 @@ from pathlib import Path
 
 from qe import db
 from qe.answer_embedding import try_embed_answers_from_env
+from qe.hashing import hash_file
 from qe.ingestion_senat import ingest_senat_dump, parse_senat_sql_dump
 
 logging.basicConfig(
@@ -47,8 +47,8 @@ def _dry_run(zip_path: Path) -> None:
         if not sql_names:
             logger.error("No .sql file found in %s", zip_path.name)
             return
-        with zf.open(sql_names[0]) as f:
-            questions = parse_senat_sql_dump(f)
+        sql_name = sql_names[0]
+        questions = parse_senat_sql_dump(lambda: zf.open(sql_name))
 
     total = len(questions)
     by_leg: dict[int, int] = collections.Counter(q.legislature for q in questions)
@@ -102,7 +102,7 @@ def main() -> None:
         _dry_run(zip_path)
         return
 
-    file_hash = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    file_hash = hash_file(zip_path)
     manifest = db.get_manifest_entries()
 
     if not args.force and manifest.get(str(zip_path)) == file_hash:

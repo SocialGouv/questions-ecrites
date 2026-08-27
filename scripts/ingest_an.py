@@ -13,7 +13,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import logging
 import sys
 import zipfile
@@ -21,6 +20,7 @@ from pathlib import Path
 
 from qe import db
 from qe.answer_embedding import try_embed_answers_from_env
+from qe.hashing import hash_file
 from qe.ingestion_an import (
     ingest_an_zip_file,
     parse_an_archive_question_xml,
@@ -121,7 +121,7 @@ def main() -> None:
     manifest = db.get_manifest_entries()
 
     for zip_path in zip_files:
-        file_hash = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+        file_hash = hash_file(zip_path)
         if manifest.get(str(zip_path)) == file_hash:
             logger.info("  %-40s -> already ingested, skipping", zip_path.name)
             continue
