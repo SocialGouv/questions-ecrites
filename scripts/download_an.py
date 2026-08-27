@@ -32,7 +32,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import logging
 import sys
 from pathlib import Path
@@ -40,6 +39,7 @@ from pathlib import Path
 import requests
 
 from qe.downloads import download_with_retries
+from qe.hashing import hash_file
 
 logging.basicConfig(
     level=logging.INFO,
@@ -109,7 +109,7 @@ def _ingest(dest_dir: Path, legislatures: list[int]) -> None:
                 "Legislature %d — archive not found, skipping ingest: %s", leg, zip_path
             )
             continue
-        file_hash = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+        file_hash = hash_file(zip_path)
         if manifest.get(str(zip_path)) == file_hash:
             logger.info(
                 "Legislature %d — already ingested (hash unchanged), skipping", leg

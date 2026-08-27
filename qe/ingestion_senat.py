@@ -25,7 +25,7 @@ Key conventions:
   - ``reponse_id`` uses a synthetic key ``"SENAT-DUMP-{qid}"`` (no JO page
     number is available in this dump).
   - Theme codes (``#2#14#`` format) are resolved to labels via the ``the``
-    lookup table, which is parsed in the same single pass.
+    lookup table, parsed in the same pass as ``tam_questions``.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import IO
+from typing import IO, Callable, Iterator
 
 from qe.ingestion_an import (
     IngestStats,
@@ -166,88 +166,87 @@ class _PartialQ:
 
 
 # ---------------------------------------------------------------------------
-# Single-pass parser
+# Two-pass parser
 # ---------------------------------------------------------------------------
 
 
-def parse_senat_sql_dump(sql_file: IO[bytes]) -> list[ParsedQuestion]:  # noqa: C901
-    """Stream-parse a Sénat pg_dump file, returning QE questions from leg 14 onward.
+def _stream_copy_blocks(
+    open_stream: Callable[[], IO[bytes]],
+) -> Iterator[tuple[str, dict[str, int], list[str]]]:
+    """Yield ``(table_name, col_idx, fields)`` for every data row in every COPY block.
 
-    Performs a single pass over the dump collecting:
-      - ``sortquestion``  → sort_map  (sorquecod → status label)
-      - ``tam_questions`` → partial question rows (filtered to QE + leg >= 14)
-      - ``tam_reponses``  → responses dict (question id → response data)
-      - ``the``           → theme_map (thecle → thelib)
-
-    After the pass, question rows are enriched with response text and resolved
-    theme labels, then converted to ``ParsedQuestion`` objects.
+    Opens a fresh stream each call so callers can iterate the dump more than
+    once (e.g. one pass per table of interest) without holding it in memory.
     """
-    sort_map: dict[str, str] = {}  # sorquecod → sorquelib
-    theme_map: dict[str, str] = {}  # str(thecle) → thelib
-    responses: dict[str, tuple] = {}  # str(idque) → (txtrep, datejorep, minreplib)
+    with open_stream() as sql_file:
+        reader = io.TextIOWrapper(sql_file, encoding="utf-8", errors="surrogateescape")
+        current_table: str | None = None
+        current_cols: dict[str, int] = {}
+
+        for raw_line in reader:
+            line = raw_line.rstrip("\n")
+
+            if current_table is None:
+                m = _COPY_RE.match(line)
+                if m:
+                    # Strip schema prefix ("questions.tam_questions" → "tam_questions")
+                    full_name = m.group(1)
+                    table_name = full_name.split(".")[-1]
+                    cols = [c.strip().strip('"') for c in m.group(2).split(",")]
+                    current_cols = {name: idx for idx, name in enumerate(cols)}
+                    current_table = table_name
+
+                    if table_name == "tam_questions":
+                        missing = _EXPECTED_COLS - set(current_cols)
+                        if missing:
+                            logger.warning(
+                                "Sénat dump: tam_questions is missing expected columns: %s",
+                                ", ".join(sorted(missing)),
+                            )
+                        logger.debug("tam_questions COPY block: %d columns", len(cols))
+                continue
+
+            if line == "\\.":
+                current_table = None
+                current_cols = {}
+                continue
+
+            yield current_table, current_cols, line.split("\t")
+
+
+def _parse_lookups_and_questions(  # noqa: C901
+    open_stream: Callable[[], IO[bytes]],
+) -> tuple[dict[str, str], dict[str, str], list[_PartialQ]]:
+    """Pass 1: ``sortquestion``, ``the``, and filtered ``tam_questions`` rows.
+
+    ``tam_reponses`` is skipped here — it's read separately in pass 2, once
+    the set of question ids we actually care about is known, so that dict
+    never has to hold response rows for the full 1978-present history.
+    """
+    sort_map: dict[str, str] = {}
+    theme_map: dict[str, str] = {}
     partial: list[_PartialQ] = []
 
-    reader = io.TextIOWrapper(sql_file, encoding="utf-8", errors="surrogateescape")
-    current_table: str | None = None
-    current_cols: dict[str, int] = {}
-
-    for raw_line in reader:
-        line = raw_line.rstrip("\n")
-
-        if current_table is None:
-            m = _COPY_RE.match(line)
-            if m:
-                # Strip schema prefix (e.g. "questions.tam_questions" → "tam_questions")
-                full_name = m.group(1)
-                table_name = full_name.split(".")[-1]
-                cols = [c.strip().strip('"') for c in m.group(2).split(",")]
-                current_cols = {name: idx for idx, name in enumerate(cols)}
-                current_table = table_name
-
-                if table_name == "tam_questions":
-                    missing = _EXPECTED_COLS - set(current_cols)
-                    if missing:
-                        logger.warning(
-                            "Sénat dump: tam_questions is missing expected columns: %s",
-                            ", ".join(sorted(missing)),
-                        )
-                    logger.debug("tam_questions COPY block: %d columns", len(cols))
-            continue
-
-        if line == "\\.":
-            current_table = None
-            current_cols = {}
-            continue
-
-        fields = line.split("\t")
-
-        if current_table == "sortquestion":
-            code = _get(fields, current_cols, "sorquecod")
-            lib = _get(fields, current_cols, "sorquelib")
+    for table, cols, fields in _stream_copy_blocks(open_stream):
+        if table == "sortquestion":
+            code = _get(fields, cols, "sorquecod")
+            lib = _get(fields, cols, "sorquelib")
             if code and lib:
                 sort_map[code] = lib
 
-        elif current_table == "the":
-            cle = _get(fields, current_cols, "thecle")
-            lib = _get(fields, current_cols, "thelib")
+        elif table == "the":
+            cle = _get(fields, cols, "thecle")
+            lib = _get(fields, cols, "thelib")
             if cle and lib:
                 theme_map[cle] = lib
 
-        elif current_table == "tam_reponses":
-            idque = _get(fields, current_cols, "idque")
-            txtrep = _get(fields, current_cols, "txtrep")
-            datejorep = _get(fields, current_cols, "datejorep")
-            minreplib = _get(fields, current_cols, "minreplib")
-            if idque:
-                responses[idque] = (txtrep, datejorep, minreplib)
-
-        elif current_table == "tam_questions":
+        elif table == "tam_questions":
             # Filter: QE only
-            if _get(fields, current_cols, "natquecod") != "QE":
+            if _get(fields, cols, "natquecod") != "QE":
                 continue
 
             # Filter: legislature 14 onward
-            leg_str = _get(fields, current_cols, "legislature")
+            leg_str = _get(fields, cols, "legislature")
             try:
                 legislature = int(leg_str or "0")
             except ValueError:
@@ -256,7 +255,7 @@ def parse_senat_sql_dump(sql_file: IO[bytes]) -> list[ParsedQuestion]:  # noqa: 
                 continue
 
             # Question number
-            numero_str = _get(fields, current_cols, "numero")
+            numero_str = _get(fields, cols, "numero")
             if not numero_str:
                 continue
             # Strip leading zeros; can be "01380"
@@ -266,31 +265,74 @@ def parse_senat_sql_dump(sql_file: IO[bytes]) -> list[ParsedQuestion]:  # noqa: 
             except ValueError:
                 continue
 
-            internal_id = _get(fields, current_cols, "id") or ""
+            internal_id = _get(fields, cols, "id") or ""
 
             partial.append(
                 _PartialQ(
                     internal_id=internal_id,
                     legislature=legislature,
                     numero=numero,
-                    sorquecod=_get(fields, current_cols, "sorquecod") or "0",
-                    titre=_get(fields, current_cols, "titre"),
-                    nom=_get(fields, current_cols, "nom"),
-                    prenom=_get(fields, current_cols, "prenom"),
-                    codequalite=_get(fields, current_cols, "codequalite"),
-                    circonscription=_get(fields, current_cols, "circonscription"),
-                    groupe=_get(fields, current_cols, "groupe"),
-                    datejodepot=_get(fields, current_cols, "datejodepot"),
-                    mindepotlib=_get(fields, current_cols, "mindepotlib"),
-                    minreplib1=_get(fields, current_cols, "minreplib1"),
-                    datejorep1=_get(fields, current_cols, "datejorep1"),
-                    txtque=_get(fields, current_cols, "txtque") or "",
-                    themes_raw=_get(fields, current_cols, "themes"),
+                    sorquecod=_get(fields, cols, "sorquecod") or "0",
+                    titre=_get(fields, cols, "titre"),
+                    nom=_get(fields, cols, "nom"),
+                    prenom=_get(fields, cols, "prenom"),
+                    codequalite=_get(fields, cols, "codequalite"),
+                    circonscription=_get(fields, cols, "circonscription"),
+                    groupe=_get(fields, cols, "groupe"),
+                    datejodepot=_get(fields, cols, "datejodepot"),
+                    mindepotlib=_get(fields, cols, "mindepotlib"),
+                    minreplib1=_get(fields, cols, "minreplib1"),
+                    datejorep1=_get(fields, cols, "datejorep1"),
+                    txtque=_get(fields, cols, "txtque") or "",
+                    themes_raw=_get(fields, cols, "themes"),
                 )
             )
 
+    return sort_map, theme_map, partial
+
+
+def _parse_responses(
+    open_stream: Callable[[], IO[bytes]], wanted_ids: set[str]
+) -> dict[str, tuple]:
+    """Pass 2: ``tam_reponses`` rows, kept only for ids in *wanted_ids*."""
+    responses: dict[str, tuple] = {}
+    for table, cols, fields in _stream_copy_blocks(open_stream):
+        if table != "tam_reponses":
+            continue
+        idque = _get(fields, cols, "idque")
+        if not idque or idque not in wanted_ids:
+            continue
+        txtrep = _get(fields, cols, "txtrep")
+        datejorep = _get(fields, cols, "datejorep")
+        minreplib = _get(fields, cols, "minreplib")
+        responses[idque] = (txtrep, datejorep, minreplib)
+    return responses
+
+
+def parse_senat_sql_dump(
+    open_stream: Callable[[], IO[bytes]],
+) -> list[ParsedQuestion]:
+    """Parse a Sénat pg_dump file, returning QE questions from leg 14 onward.
+
+    Two passes over the dump, via *open_stream* (called once per pass — the
+    caller must be able to reopen the same underlying file each time):
+      1. ``sortquestion`` → sort_map, ``the`` → theme_map, ``tam_questions``
+         → partial question rows (filtered to QE + leg >= 14).
+      2. ``tam_reponses`` → responses dict, filtered to only the question ids
+         kept in pass 1. Doing this as a second, filtered pass (rather than
+         collecting every response row up front) keeps memory bounded to the
+         legislatures we actually keep, instead of the full 1978-present
+         history the dump covers.
+
+    Question rows are then enriched with response text and resolved theme
+    labels, and converted to ``ParsedQuestion`` objects.
+    """
+    sort_map, theme_map, partial = _parse_lookups_and_questions(open_stream)
+    wanted_ids = {p.internal_id for p in partial}
+    responses = _parse_responses(open_stream, wanted_ids)
+
     logger.debug(
-        "Single-pass done: %d partial questions, %d responses, %d sort codes, %d themes",
+        "Two-pass done: %d partial questions, %d responses, %d sort codes, %d themes",
         len(partial),
         len(responses),
         len(sort_map),
@@ -395,8 +437,7 @@ def ingest_senat_dump(
             )
         sql_name = sql_names[0]
 
-        with zf.open(sql_name) as sql_file:
-            questions = parse_senat_sql_dump(sql_file)
+        questions = parse_senat_sql_dump(lambda: zf.open(sql_name))
 
     logger.info(
         "  %d questions parsed (legislature >= 14, natquecod=QE)", len(questions)
