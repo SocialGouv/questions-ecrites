@@ -623,10 +623,14 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Downgrade schema."""
 
-    op.drop_table("verificationTokens")
-    op.drop_table("sessions")
-    op.drop_table("accounts")
-    op.drop_table("users")
+    # IF EXISTS: b2c3d4e5f6a7's downgrade already drops these four Auth.js
+    # tables (it recreates/drops them idempotently for pre-squash databases),
+    # so by the time a full `downgrade base` reaches this migration they're
+    # already gone.
+    op.execute('DROP TABLE IF EXISTS "verificationTokens"')
+    op.execute('DROP TABLE IF EXISTS "sessions"')
+    op.execute('DROP TABLE IF EXISTS "accounts"')
+    op.execute('DROP TABLE IF EXISTS "users"')
     op.drop_table("app_settings")
     op.drop_index(
         "correction_feedback_created_at_idx", table_name="correction_feedback"
