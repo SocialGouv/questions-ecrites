@@ -196,6 +196,34 @@ def plan_created_keys(plan: Plan) -> set[str]:
     return {key for key, _nom, _did, _freq in plan.created}
 
 
+def _pick_nom(
+    key: str,
+    labels: list[tuple[int, str]],
+    direction_label: str,
+    raw_labels: dict[tuple[str, str], list[tuple[int, str]]],
+) -> str:
+    """Display name for a created bureau: '[KEY] Thematic label'.
+
+    Several raw keys can fold into one entity ('SDAS1/CHEF' +
+    'SDAS1/ZONAGE' → SDAS1); the most frequent label that yields a real
+    thematic name wins, so the pool variant never beats the descriptive
+    one. Collapsed-prefix entities whose view labels were all generic
+    ('Chef de bureau') fall back to the raw-step harvest, where the
+    drafting postes carry the real name.
+    """
+    thematic_candidates = [
+        (label_freq, thematic)
+        for label_freq, label in labels
+        if (thematic := _thematic_label(label)) is not None
+    ]
+    best = max(thematic_candidates)[1] if thematic_candidates else None
+    if best is None and "/" not in key:
+        fallback = raw_labels.get((direction_label, key), [])
+        if fallback:
+            best = max(fallback)[1]
+    return f"[{key}] {best}" if best else f"[{key}]"
+
+
 def _plan_entity(
     plan: Plan,
     direction_label: str,
@@ -207,6 +235,7 @@ def _plan_entity(
     taken_min15_keys: set[str],
     directions: dict[str, int],
     min_freq: int,
+    raw_labels: dict[tuple[str, str], list[tuple[int, str]]],
 ) -> None:
     """Decide LINK / CREATE / SKIP for one aggregated bureau entity."""
     if key in taken_min15_keys:
@@ -248,18 +277,47 @@ def _plan_entity(
         ):
             plan.skipped.append((key, f"sous-entité du bureau {prefix}", freq))
             return
-    # Several raw keys can fold into one entity ('SDAS1/CHEF' +
-    # 'SDAS1/ZONAGE' → SDAS1); pick the most frequent label that yields
-    # a real thematic name, so the pool variant never wins over the
-    # descriptive one.
-    thematic_candidates = [
-        (label_freq, thematic)
-        for label_freq, label in labels
-        if (thematic := _thematic_label(label)) is not None
-    ]
-    thematic_best = max(thematic_candidates)[1] if thematic_candidates else None
-    nom = f"[{key}] {thematic_best}" if thematic_best else f"[{key}]"
+    nom = _pick_nom(key, labels, direction_label, raw_labels)
     plan.created.append((key, nom, directions[direction_label], freq))
+
+
+def _harvest_raw_labels(conn) -> dict[tuple[str, str], list[tuple[int, str]]]:
+    """Thematic label candidates straight from the RAW workflow steps.
+
+    The view (and `question_bureau_extract` before it) keeps only each
+    question's LATEST bureau step — which in the DGOS circuit is almost
+    always the chief's validation ('SDP4 - Chef de bureau'), shadowing
+    the drafting poste that carries the actual name ('SDP4 - Relations
+    usagers et expérience patient'). Harvesting every step of
+    `reponses_extract_etapes` recovers those names.
+
+    Returns {(direction, SD_KEY): [(freq, label), …]} where SD_KEY is
+    the sous-direction segment normalised exactly like the view does
+    (upper, spaces stripped) — the match target for collapsed entities.
+    For multi-cell bureaus the most frequent cell name wins: a slightly
+    off title beats a bare code, and admins can rename (product call).
+    """
+    rows = conn.execute(
+        sqltext(
+            "SELECT poste_etape, COUNT(*) AS freq "
+            "FROM reponses_extract_etapes "
+            "WHERE poste_etape IS NOT NULL "
+            "GROUP BY poste_etape"
+        )
+    ).fetchall()
+    split_re = re.compile(r"\s+-\s+")
+    harvest: dict[tuple[str, str], list[tuple[int, str]]] = {}
+    for r in rows:
+        segs = [x.strip() for x in split_re.split(r.poste_etape.strip()) if x.strip()]
+        if len(segs) < 3:
+            continue
+        direction = segs[0].upper()
+        sd_key = segs[1].upper().replace(" ", "")
+        label = _thematic_label(" - ".join(segs[2:]))
+        if label is None:
+            continue
+        harvest.setdefault((direction, sd_key), []).append((int(r.freq), label))
+    return harvest
 
 
 def build_plan(min_freq: int) -> Plan:
@@ -281,6 +339,8 @@ def build_plan(min_freq: int) -> Plan:
             r.nom: r.id
             for r in conn.execute(sqltext("SELECT id, nom FROM directions")).fetchall()
         }
+
+        raw_labels = _harvest_raw_labels(conn)
 
         # MIN15 universe, straight from the view so normalisation matches
         # the attribution vote byte-for-byte.
@@ -325,6 +385,7 @@ def build_plan(min_freq: int) -> Plan:
             taken_min15_keys,
             directions,
             min_freq,
+            raw_labels,
         )
 
     return plan
