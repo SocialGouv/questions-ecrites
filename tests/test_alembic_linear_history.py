@@ -1,7 +1,7 @@
 """Guard: the Alembic history must stay a single linear chain.
 
 `alembic upgrade head` (singular) is the documented and deployed command
-(README, CLAUDE.md, scripts/load_pgvector.py). It aborts with "Multiple
+(README, CLAUDE.md). It aborts with "Multiple
 head revisions are present" as soon as two migrations declare the same
 ``down_revision`` and both land on main.
 
