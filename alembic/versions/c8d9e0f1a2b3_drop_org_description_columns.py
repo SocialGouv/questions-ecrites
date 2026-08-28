@@ -50,7 +50,8 @@ def upgrade() -> None:
         op.drop_column("directions", "description")
     if "description" in _columns(bind, "bureaux"):
         op.drop_column("bureaux", "description")
-    op.execute("DROP TABLE IF EXISTS directions_desc_backup")
+    if sa.inspect(bind).has_table("directions_desc_backup"):
+        op.drop_table("directions_desc_backup")
 
 
 def downgrade() -> None:
