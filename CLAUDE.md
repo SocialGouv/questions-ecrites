@@ -43,8 +43,6 @@ qe/                         # Main package (no __init__.py)
 scripts/
 ├── embed_questions.py                 # Embed questions from PostgreSQL into pgvector (vec_questions_opendata)
 ├── embed_answers.py                   # Embed answers from PostgreSQL into pgvector (vec_answers_opendata)
-├── dump_qdrant.py                     # One-time: export Qdrant collections → JSONL
-├── load_pgvector.py                   # One-time: import JSONL dump → pgvector tables
 ├── find_similar_questions.py          # CLI: semantically similar questions/answers
 └── reset_dbs.py                       # Reset pgvector tables + PostgreSQL state
 

@@ -9,8 +9,8 @@ from typing import Protocol, Sequence, runtime_checkable
 class VectorStore(Protocol):
     """Structural protocol satisfied by any vector database client.
 
-    PgvectorClient (and the legacy QdrantClient) implement this interface, so
-    call sites typed against VectorStore remain backend-agnostic.
+    PgvectorClient implements this interface, so call sites typed against
+    VectorStore remain backend-agnostic.
 
     Point dict shapes
     -----------------

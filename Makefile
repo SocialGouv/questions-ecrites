@@ -44,15 +44,6 @@ pre-commit:
 # All checks (for CI)
 check: lint-fix format typecheck security test
 
-# Qdrant database
-qdrant-dump:
-	docker run --rm \
-		-v qdrant_data:/qdrant/storage:ro \
-		-v $(PWD):/backup \
-		busybox \
-		tar czf /backup/qdrant_storage_dump.tar.gz -C /qdrant/storage .
-	@echo "===== Qdrant database dumped to qdrant_storage_dump.tar.gz ====="
-
 # PostgreSQL database
 pg-dump:
 	docker exec qe-postgres pg_dump -U qe qe > qe_postgres_dump.sql
@@ -69,4 +60,4 @@ clean:
 dev:
 	poetry run uvicorn api.main:app --reload --port $${PORT:-8000}
 
-.PHONY: install test integration_test lint lint-fix format format-check typecheck security pre-commit check clean qdrant-dump dev
+.PHONY: install test integration_test lint lint-fix format format-check typecheck security pre-commit check clean dev
