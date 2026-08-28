@@ -37,7 +37,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import IO, Callable, Iterator
+from typing import IO, Callable, Iterator, NamedTuple
 
 from qe.ingestion_an import (
     IngestStats,
@@ -143,6 +143,14 @@ def _resolve_themes(raw: str | None, theme_map: dict[str, str]) -> list[str] | N
 # ---------------------------------------------------------------------------
 # Intermediate structure for buffering a filtered question row
 # ---------------------------------------------------------------------------
+
+
+class _ResponseRow(NamedTuple):
+    """A ``tam_reponses`` row, keyed by ``idque`` in the ``responses`` dict."""
+
+    txtrep: str | None
+    datejorep: str | None
+    minreplib: str | None
 
 
 @dataclass
@@ -293,19 +301,20 @@ def _parse_lookups_and_questions(  # noqa: C901
 
 def _parse_responses(
     open_stream: Callable[[], IO[bytes]], wanted_ids: set[str]
-) -> dict[str, tuple]:
+) -> dict[str, _ResponseRow]:
     """Pass 2: ``tam_reponses`` rows, kept only for ids in *wanted_ids*."""
-    responses: dict[str, tuple] = {}
+    responses: dict[str, _ResponseRow] = {}
     for table, cols, fields in _stream_copy_blocks(open_stream):
         if table != "tam_reponses":
             continue
         idque = _get(fields, cols, "idque")
         if not idque or idque not in wanted_ids:
             continue
-        txtrep = _get(fields, cols, "txtrep")
-        datejorep = _get(fields, cols, "datejorep")
-        minreplib = _get(fields, cols, "minreplib")
-        responses[idque] = (txtrep, datejorep, minreplib)
+        responses[idque] = _ResponseRow(
+            txtrep=_get(fields, cols, "txtrep"),
+            datejorep=_get(fields, cols, "datejorep"),
+            minreplib=_get(fields, cols, "minreplib"),
+        )
     return responses
 
 
@@ -354,9 +363,9 @@ def parse_senat_sql_dump(
         # Response data: prefer tam_reponses (richer), fall back to tam_questions cols
         rep_row = responses.get(p.internal_id)
         if rep_row:
-            txtrep, datejorep_raw, minreplib = rep_row
-            date_rep = _parse_timestamp_as_date(datejorep_raw) or date_rep
-            ministre_reponse = minreplib or p.minreplib1
+            txtrep = rep_row.txtrep
+            date_rep = _parse_timestamp_as_date(rep_row.datejorep) or date_rep
+            ministre_reponse = rep_row.minreplib or p.minreplib1
         else:
             txtrep = None
             ministre_reponse = p.minreplib1 if etat == "REPONDU" else None

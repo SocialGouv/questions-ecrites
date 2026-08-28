@@ -9,7 +9,10 @@ from uuid import UUID
 
 
 def hash_file(path: Path) -> str:
-    """SHA-256 hash of a file's contents, read in chunks (not loaded fully into memory)."""
+    """SHA-256 hash of a file's contents, read in chunks (not loaded fully into memory).
+
+    Uses ``hashlib.file_digest`` (Python >= 3.11; this project requires >= 3.12).
+    """
     with path.open("rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
