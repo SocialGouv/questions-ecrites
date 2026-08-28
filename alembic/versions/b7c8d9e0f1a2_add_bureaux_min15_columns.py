@@ -46,9 +46,17 @@ def _bureaux_columns(bind: sa.engine.Connection) -> set[str]:
     return {c["name"] for c in inspector.get_columns("bureaux")}
 
 
+def _constraints(bind: sa.engine.Connection) -> set[str]:
+    inspector = sa.inspect(bind)
+    names = {c["name"] for c in inspector.get_unique_constraints("bureaux")}
+    names |= {c["name"] for c in inspector.get_check_constraints("bureaux")}
+    return names
+
+
 def upgrade() -> None:
     """Upgrade schema."""
-    columns = _bureaux_columns(op.get_bind())
+    bind = op.get_bind()
+    columns = _bureaux_columns(bind)
     if "statut" not in columns:
         # server_default so the 36 existing rows are backfilled to
         # 'organigramme' in the same statement — they all predate MIN15
@@ -64,16 +72,34 @@ def upgrade() -> None:
         )
     if "min15_key" not in columns:
         op.add_column("bureaux", sa.Column("min15_key", sa.Text(), nullable=True))
+    # Constraints are created independently of the column checks so a
+    # partial re-run (column present, constraint missing) still
+    # converges to the full contract.
+    constraints = _constraints(bind)
+    if "bureaux_min15_key_unique" not in constraints:
         op.create_unique_constraint(
             "bureaux_min15_key_unique", "bureaux", ["min15_key"]
+        )
+    if "bureaux_statut_check" not in constraints:
+        # DB-level enum contract — any other value than the two known
+        # provenances is a bug, refuse it at the source.
+        op.create_check_constraint(
+            "bureaux_statut_check",
+            "bureaux",
+            "statut IN ('organigramme', 'min15')",
         )
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    columns = _bureaux_columns(op.get_bind())
-    if "min15_key" in columns:
+    bind = op.get_bind()
+    columns = _bureaux_columns(bind)
+    constraints = _constraints(bind)
+    if "bureaux_min15_key_unique" in constraints:
         op.drop_constraint("bureaux_min15_key_unique", "bureaux", type_="unique")
+    if "bureaux_statut_check" in constraints:
+        op.drop_constraint("bureaux_statut_check", "bureaux", type_="check")
+    if "min15_key" in columns:
         op.drop_column("bureaux", "min15_key")
     if "statut" in columns:
         op.drop_column("bureaux", "statut")

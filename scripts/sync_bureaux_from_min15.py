@@ -58,6 +58,7 @@ import argparse
 import logging
 import re
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from sqlalchemy import text as sqltext
 
@@ -87,6 +88,21 @@ GENERIC_LABELS = {
 
 # "Bureau SP3 - Prévention des addictions" → "Prévention des addictions"
 _THEMATIC_RE = re.compile(r"^\s*Bureau\s+\S+\s*-\s*(.+)$", re.IGNORECASE)
+
+# A candidate thematic label shorter than this is a bare code ('2B',
+# 'CM', 'SP3') left over after stripping the 'Bureau X -' prefix, not a
+# human-readable name — the longest real thematic name observed in the
+# corpus below this bound is 'Médicament' (10 chars), the shortest
+# code-noise above chance is 'MCGRM' (5).
+MIN_THEMATIC_LEN = 9
+
+
+class RefBureau(NamedTuple):
+    """One existing `bureaux` row, keyed for the LINK lookup."""
+
+    id: int
+    nom: str
+    min15_key: str | None
 
 
 @dataclass
@@ -137,15 +153,15 @@ def _thematic_label(label: str) -> str | None:
     if part.lower() in GENERIC_LABELS:
         return None
     # A part that is descriptive (longer than an acronym) is worth
-    # keeping as-is; short leftovers ('2B', 'CM') are codes, not names.
-    return part if len(part) > 8 else None
+    # keeping as-is; shorter leftovers are codes, not names.
+    return part if len(part) >= MIN_THEMATIC_LEN else None
 
 
 def _find_referential_match(
     key: str,
     raw_keys: list[str],
-    by_ref_key: dict[str, object],
-) -> object | None:
+    by_ref_key: dict[str, RefBureau],
+) -> RefBureau | None:
     """LINK lookup: the collapsed key, its post-'/' segment, or the
     post-'/' segment of any RAW key folded into this entity.
 
@@ -154,14 +170,30 @@ def _find_referential_match(
     prefix rule) but must link to '[MCGRM]', not create a phantom
     '[SD1]'.
     """
-    match = by_ref_key.get(key)
-    if match is None and "/" in key:
-        match = by_ref_key.get(key.rsplit("/", 1)[1])
-    if match is None:
-        for raw in raw_keys:
-            if "/" in raw and (match := by_ref_key.get(raw.rsplit("/", 1)[1])):
-                break
-    return match
+    candidates = [key]
+    if "/" in key:
+        candidates.append(key.rsplit("/", 1)[1])
+    candidates.extend(raw.rsplit("/", 1)[1] for raw in raw_keys if "/" in raw)
+    for candidate in candidates:
+        found = by_ref_key.get(candidate)
+        if found is not None:
+            return found
+    return None
+
+
+def plan_linked_ids(plan: Plan) -> set[int]:
+    """Referential rows already claimed by a LINK earlier in this plan.
+
+    The same collapsed key can surface under two direction labels
+    (MIN15 direction text is free-form); without this guard both
+    entities would link — or create — the same row twice.
+    """
+    return {bureau_id for bureau_id, _nom, _key in plan.linked}
+
+
+def plan_created_keys(plan: Plan) -> set[str]:
+    """Keys already scheduled for creation earlier in this plan."""
+    return {key for key, _nom, _did, _freq in plan.created}
 
 
 def _plan_entity(
@@ -171,7 +203,7 @@ def _plan_entity(
     freq: int,
     labels: list[tuple[int, str]],
     raw_keys: list[str],
-    by_ref_key: dict[str, object],
+    by_ref_key: dict[str, RefBureau],
     taken_min15_keys: set[str],
     directions: dict[str, int],
     min_freq: int,
@@ -182,10 +214,10 @@ def _plan_entity(
         return
     match = _find_referential_match(key, raw_keys, by_ref_key)
     if match is not None:
-        if match.min15_key is None:  # type: ignore[attr-defined]
-            plan.linked.append((match.id, match.nom, key))  # type: ignore[attr-defined]
+        if match.min15_key is None and match.id not in plan_linked_ids(plan):
+            plan.linked.append((match.id, match.nom, key))
         else:
-            plan.skipped.append((key, f"référentiel déjà lié ({match.nom})", freq))  # type: ignore[attr-defined]
+            plan.skipped.append((key, f"référentiel déjà lié ({match.nom})", freq))
         return
     # CREATE candidates.
     if direction_label not in directions:
@@ -197,6 +229,9 @@ def _plan_entity(
         return
     if freq < min_freq:
         plan.skipped.append((key, f"trop rare (< {min_freq} questions)", freq))
+        return
+    if key in plan_created_keys(plan):
+        plan.skipped.append((key, "déjà créé sous une autre direction", freq))
         return
     # Several raw keys can fold into one entity ('SDAS1/CHEF' +
     # 'SDAS1/ZONAGE' → SDAS1); pick the most frequent label that yields
