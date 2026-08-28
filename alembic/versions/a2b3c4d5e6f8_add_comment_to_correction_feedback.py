@@ -38,16 +38,30 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    # IF NOT EXISTS: earlier Atlas Sandbox catch-up migrations set the
-    # precedent that additive schema changes should be idempotent. Not
-    # strictly needed here (no divergence at this rev), but cheap
-    # insurance against a partial re-run.
-    op.execute(
-        "ALTER TABLE correction_feedback "
-        "ADD COLUMN IF NOT EXISTS comment TEXT"
-    )
+    # `op.add_column` (dialect-abstracted, type-checked) instead of raw
+    # SQL. Idempotency handled via an inspector check rather than
+    # `IF NOT EXISTS`, which SQLAlchemy's DDL compiler doesn't emit —
+    # the precedent set by earlier Atlas Sandbox catch-up migrations
+    # is « an additive change should be safe to re-run », and we keep
+    # that here without leaving raw SQL in the migration.
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {c["name"] for c in inspector.get_columns("correction_feedback")}
+    if "comment" not in columns:
+        op.add_column(
+            "correction_feedback",
+            sa.Column("comment", sa.Text(), nullable=True),
+        )
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_column("correction_feedback", "comment")
+    # Mirror the upgrade's idempotency: `drop_column` raises if the
+    # column is already gone, which would trip anyone running
+    # `alembic downgrade -1` twice or against an env where the column
+    # was never applied.
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {c["name"] for c in inspector.get_columns("correction_feedback")}
+    if "comment" in columns:
+        op.drop_column("correction_feedback", "comment")
