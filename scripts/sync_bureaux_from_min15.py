@@ -141,12 +141,36 @@ def _thematic_label(label: str) -> str | None:
     return part if len(part) > 8 else None
 
 
+def _find_referential_match(
+    key: str,
+    raw_keys: list[str],
+    by_ref_key: dict[str, object],
+) -> object | None:
+    """LINK lookup: the collapsed key, its post-'/' segment, or the
+    post-'/' segment of any RAW key folded into this entity.
+
+    The raw-key pass matters when the collapse stole a suffix that was
+    itself a referential bureau: 'SD1/MCGRM' collapses to 'SD1' (digit
+    prefix rule) but must link to '[MCGRM]', not create a phantom
+    '[SD1]'.
+    """
+    match = by_ref_key.get(key)
+    if match is None and "/" in key:
+        match = by_ref_key.get(key.rsplit("/", 1)[1])
+    if match is None:
+        for raw in raw_keys:
+            if "/" in raw and (match := by_ref_key.get(raw.rsplit("/", 1)[1])):
+                break
+    return match
+
+
 def _plan_entity(
     plan: Plan,
     direction_label: str,
     key: str,
     freq: int,
     labels: list[tuple[int, str]],
+    raw_keys: list[str],
     by_ref_key: dict[str, object],
     taken_min15_keys: set[str],
     directions: dict[str, int],
@@ -156,10 +180,7 @@ def _plan_entity(
     if key in taken_min15_keys:
         plan.skipped.append((key, "déjà synchronisé (min15_key)", freq))
         return
-    # LINK: full key, or its post-'/' segment, matches the referential.
-    match = by_ref_key.get(key)
-    if match is None and "/" in key:
-        match = by_ref_key.get(key.rsplit("/", 1)[1])
+    match = _find_referential_match(key, raw_keys, by_ref_key)
     if match is not None:
         if match.min15_key is None:  # type: ignore[attr-defined]
             plan.linked.append((match.id, match.nom, key))  # type: ignore[attr-defined]
@@ -234,10 +255,11 @@ def build_plan(min_freq: int) -> Plan:
             continue
         slot = agg.setdefault(
             (r.direction_label, collapsed),
-            {"freq": 0, "labels": []},
+            {"freq": 0, "labels": [], "raw_keys": []},
         )
         slot["freq"] = int(slot["freq"]) + int(r.freq)  # type: ignore[arg-type]
         slot["labels"].append((int(r.freq), r.bureau_label))  # type: ignore[union-attr]
+        slot["raw_keys"].append(r.bureau_key)  # type: ignore[union-attr]
 
     for (direction_label, key), slot in sorted(
         agg.items(), key=lambda kv: -int(kv[1]["freq"])  # type: ignore[arg-type]
@@ -248,6 +270,7 @@ def build_plan(min_freq: int) -> Plan:
             key,
             int(slot["freq"]),  # type: ignore[arg-type]
             slot["labels"],  # type: ignore[arg-type]
+            slot["raw_keys"],  # type: ignore[arg-type]
             by_ref_key,
             taken_min15_keys,
             directions,
