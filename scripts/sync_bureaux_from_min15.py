@@ -233,6 +233,21 @@ def _plan_entity(
     if key in plan_created_keys(plan):
         plan.skipped.append((key, "déjà créé sous une autre direction", freq))
         return
+    # A slashed key whose PREFIX is itself already a known bureau
+    # ('SDRH1/1A' when SDRH1 exists) names a cell inside that bureau,
+    # not a distinct bureau — creating both would duplicate the entity
+    # in the referential. Prefix-first ordering is guaranteed by the
+    # freq sort: the parent bureau always aggregates more questions
+    # than any one of its cells.
+    if "/" in key:
+        prefix = key.rsplit("/", 1)[0]
+        if (
+            prefix in taken_min15_keys
+            or prefix in plan_created_keys(plan)
+            or any(linked_key == prefix for _i, _n, linked_key in plan.linked)
+        ):
+            plan.skipped.append((key, f"sous-entité du bureau {prefix}", freq))
+            return
     # Several raw keys can fold into one entity ('SDAS1/CHEF' +
     # 'SDAS1/ZONAGE' → SDAS1); pick the most frequent label that yields
     # a real thematic name, so the pool variant never wins over the
