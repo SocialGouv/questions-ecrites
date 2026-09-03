@@ -52,6 +52,7 @@ from sqlalchemy.orm import Session, load_only
 from tqdm import tqdm
 
 from qe import db
+from qe.attributions import sync_attribution_flags_for_points
 from qe.clients.embedding import EmbeddingClient
 from qe.clients.pgvector_client import PgvectorClient
 from qe.clients.vector_store import VectorStore
@@ -440,6 +441,7 @@ def embed_questions(  # noqa: C901
 
                 if points:
                     vector_store.upsert_points(collection, points)
+                    sync_attribution_flags_for_points([p["id"] for p in points])
                 upserted += len(points)
 
     if seen == 0:
