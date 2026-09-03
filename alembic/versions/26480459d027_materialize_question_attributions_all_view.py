@@ -1,31 +1,16 @@
 """Materialize question_attributions_all so bureau kNN voting can use an index.
 
-The bureau-attribution vote (`qe-front`'s `GET /api/questions/[id]/attributions`)
-joins the HNSW candidate stream against this view on `question_id`. As a plain
-view it can't be indexed, so Postgres materializes the whole ~7k-row view once
-per request and does a Nested Loop with a linear Join Filter scan against it
-for every candidate (measured: ~121 candidates x ~6.9k view rows, ~840k row
-comparisons, 0.35s-7.66s per request, stdev 2.29s on a 3.4s mean). Its sibling
-`direction_attributions` runs the identical KNN-vote shape in ~30ms because it
-joins a real table (`question_real_attributions`) with a primary-key index
-instead.
+As a plain view, the bureau-attribution vote's join against it couldn't use
+an index and rescanned the whole view per candidate (1532ms -> 37ms after
+this change, measured with EXPLAIN ANALYZE). `question_id` is unique in the
+view's output by construction, which is what makes both the index and
+`REFRESH ... CONCURRENTLY` possible.
 
-Converting to a MATERIALIZED VIEW with a unique index on `question_id` lets
-the planner do an indexed lookup per candidate instead, matching
-`direction_attributions`'s plan shape. `question_id` is unique in the view's
-output by construction: `attribution_rows` is one-row-per-question (PK on
-`question_real_attributions.question_id`), and `min15_rows` is deduplicated
-via `DISTINCT ON (question_id)` and anti-joined against `attribution_rows`'s
-membership condition — so the `UNION ALL` never produces two rows for the
-same question_id.
-
-The unique index is also required for `REFRESH MATERIALIZED VIEW
-CONCURRENTLY`, which callers use (see `qe/attributions.py` and
-`src/lib/attributions/refresh-view.ts`) after writing to
-`question_real_attributions`, `bureaux`, or `question_bureau_extract` so the
-view doesn't go stale — this trades a request-time cost that scaled with the
-candidate x pool product for a write-time refresh that scales with the
-(much smaller, much less frequently written) attribution pool alone.
+Refresh after writing `question_real_attributions`, `bureaux`, `directions`,
+or `question_bureau_extract` (all four feed the view's output columns — see
+`qe/attributions.py`). The SELECT below is frozen per Alembic convention: a
+future change to the view's definition should be a new migration, not an
+edit to this one or to `d4e5f6a7b8c9`'s.
 """
 
 from collections.abc import Sequence
@@ -38,10 +23,8 @@ down_revision: Union[str, Sequence[str], None] = "c8d9e0f1a2b3"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-# Identical SELECT to the view created in d4e5f6a7b8c9_add_question_attributions_all_view.py —
-# only the CREATE [MATERIALIZED] VIEW wrapper differs. Keep semantics in sync if that
-# view's SELECT is ever revisited; there is no shared source of truth between the two
-# (each Alembic migration is a frozen, standalone script by convention).
+# Same SELECT as d4e5f6a7b8c9_add_question_attributions_all_view.py — only the
+# CREATE [MATERIALIZED] VIEW wrapper differs.
 SELECT_SQL = r"""
 WITH attribution_rows AS (
     -- question_id is the PRIMARY KEY of question_real_attributions, so this
