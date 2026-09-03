@@ -62,6 +62,7 @@ from typing import NamedTuple
 
 from sqlalchemy import text as sqltext
 
+from qe.attributions import refresh_attributions_all_view
 from qe.db import get_engine
 
 logging.basicConfig(
@@ -321,6 +322,9 @@ def _harvest_raw_labels(conn) -> dict[tuple[str, str], list[tuple[int, str]]]:
 
 
 def build_plan(min_freq: int) -> Plan:
+    # This function reads question_attributions_all below — refresh first so
+    # the plan isn't built against a stale snapshot.
+    refresh_attributions_all_view()
     engine = get_engine()
     with engine.connect() as conn:
         # Existing referential: id + key derived from the '[KEY]' prefix,
