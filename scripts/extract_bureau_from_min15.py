@@ -46,6 +46,7 @@ from collections import Counter
 from sqlalchemy import text as sqltext
 
 from qe import db
+from qe.attributions import refresh_attributions_all_view
 
 logging.basicConfig(
     level=logging.INFO,
@@ -227,6 +228,9 @@ def main() -> None:
             n += 1
         session.commit()
     logger.info("Upserted %d rows into question_bureau_extract", n)
+
+    logger.info("Refreshing question_attributions_all …")
+    refresh_attributions_all_view()
 
 
 if __name__ == "__main__":
