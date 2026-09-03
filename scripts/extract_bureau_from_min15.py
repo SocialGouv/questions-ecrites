@@ -46,7 +46,10 @@ from collections import Counter
 from sqlalchemy import text as sqltext
 
 from qe import db
-from qe.attributions import refresh_attributions_all_view
+from qe.attributions import (
+    refresh_attributions_all_view,
+    resync_bureau_attribution_flags,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -231,6 +234,8 @@ def main() -> None:
 
     logger.info("Refreshing question_attributions_all …")
     refresh_attributions_all_view()
+    logger.info("Resyncing has_bureau_attribution …")
+    resync_bureau_attribution_flags()
 
 
 if __name__ == "__main__":
