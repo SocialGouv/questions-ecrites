@@ -41,7 +41,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 KNN = 15  # matches production
-HNSW_EF_SEARCH = 500
+HNSW_EF_SEARCH = 1000  # matches production (attributionAlgo.ts) as of the partial-index fix
 TOP_K = 3
 
 # Directions we test on — those where the algo has ANY training signal.

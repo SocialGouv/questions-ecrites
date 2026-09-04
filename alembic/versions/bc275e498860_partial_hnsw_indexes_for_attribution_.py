@@ -18,10 +18,11 @@ to pgvector's max of 1000 — a smaller graph needs a larger relative search
 effort to reach the same recall as the full index).
 
 `has_direction_attribution`/`has_bureau_attribution` are denormalized flags,
-kept in sync on write (see `qe/attributions.py`'s `refresh_attribution_flags`
-and `src/lib/attributions/refresh-view.ts`'s `refreshAttributionFlags`)
-rather than computed by the index predicate itself, because a partial
-index's predicate must be immutable and can't reference other tables.
+kept in sync on write (see `qe/attributions.py`'s `sync_attribution_flags_for_points`
+and `resync_bureau_attribution_flags`/`resync_direction_attribution_flags`, and
+`src/lib/attributions/refresh-view.ts`'s `refreshAttributionFlags`) rather than
+computed by the index predicate itself, because a partial index's predicate
+must be immutable and can't reference other tables.
 """
 
 from collections.abc import Sequence
@@ -56,6 +57,15 @@ def upgrade() -> None:
         ),
     )
 
+    # question_attributions_all backs has_bureau_attribution below — refresh
+    # it first so the backfill doesn't read a snapshot from whenever it was
+    # last refreshed (possibly before this deploy).
+    op.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY question_attributions_all")
+
+    # Guarded on the same EXISTS checks: both columns already hold the
+    # correct `false` from server_default for every row that isn't
+    # attributed, so only the ~13%/~6% of rows that need to flip to `true`
+    # get a new tuple version (and an HNSW insert) instead of all ~59k.
     op.execute("""
         UPDATE vec_questions_opendata v
         SET has_direction_attribution = EXISTS (
@@ -64,6 +74,15 @@ def upgrade() -> None:
                 AND qa.direction_reelle_id IS NOT NULL
             ),
             has_bureau_attribution = EXISTS (
+              SELECT 1 FROM question_attributions_all va
+              WHERE va.question_id = v.payload ->> 'question_id'
+            )
+        WHERE EXISTS (
+              SELECT 1 FROM question_real_attributions qa
+              WHERE qa.question_id = v.payload ->> 'question_id'
+                AND qa.direction_reelle_id IS NOT NULL
+            )
+           OR EXISTS (
               SELECT 1 FROM question_attributions_all va
               WHERE va.question_id = v.payload ->> 'question_id'
             )
@@ -79,6 +98,13 @@ def upgrade() -> None:
         USING hnsw (vector vector_cosine_ops)
         WHERE (has_bureau_attribution)
     """)
+
+    # Without this, the planner has no statistics on the new columns until
+    # autovacuum's own schedule catches up — and empirically, with stale
+    # stats it sometimes picks a full-table scan over the partial index it
+    # should use (confirmed by re-running EXPLAIN ANALYZE before and after
+    # an explicit ANALYZE on this exact table).
+    op.execute("ANALYZE vec_questions_opendata")
 
 
 def downgrade() -> None:

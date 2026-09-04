@@ -335,6 +335,15 @@ class QuestionsOpendataVec(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     vector: Mapped[list] = mapped_column(Vector(_VECTOR_DIM), nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    # Back the partial HNSW indexes used by direction/bureau kNN voting
+    # (see bc275e498860_partial_hnsw_indexes_for_attribution_.py). Kept in
+    # sync on write — see qe/attributions.py.
+    has_direction_attribution: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false()
+    )
+    has_bureau_attribution: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false()
+    )
 
 
 class AnswersOpendataVec(Base):

@@ -52,7 +52,11 @@ from sqlalchemy.orm import Session, load_only
 from tqdm import tqdm
 
 from qe import db
-from qe.attributions import sync_attribution_flags_for_points
+from qe.attributions import (
+    resync_bureau_attribution_flags,
+    resync_direction_attribution_flags,
+    sync_attribution_flags_for_points,
+)
 from qe.clients.embedding import EmbeddingClient
 from qe.clients.pgvector_client import PgvectorClient
 from qe.clients.vector_store import VectorStore
@@ -441,7 +445,7 @@ def embed_questions(  # noqa: C901
 
                 if points:
                     vector_store.upsert_points(collection, points)
-                    sync_attribution_flags_for_points([p["id"] for p in points])
+                    sync_attribution_flags_for_points([str(p["id"]) for p in points])
                 upserted += len(points)
 
     if seen == 0:
@@ -469,6 +473,14 @@ def embed_questions(  # noqa: C901
             empty,
             len(stale_ids),
         )
+
+    # Self-heals any row whose per-batch sync above didn't happen — e.g. the
+    # process was killed between upsert_points' commit and
+    # sync_attribution_flags_for_points' commit in an earlier run. Both are
+    # guarded (IS DISTINCT FROM), so this is cheap when nothing needs fixing
+    # (~0.4s measured on the full table) — safe to run unconditionally.
+    resync_direction_attribution_flags()
+    resync_bureau_attribution_flags()
 
 
 def main() -> None:
