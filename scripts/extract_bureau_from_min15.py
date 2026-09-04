@@ -174,6 +174,12 @@ def main() -> None:
                     help="Print 20 sample rows, no DB write")
     ap.add_argument("--reset", action="store_true",
                     help="TRUNCATE question_bureau_extract before insert")
+    ap.add_argument("--verify-recall", action="store_true",
+                    help="Run the partial-index recall canary after import "
+                         "(adds tens of seconds to minutes — see "
+                         "verify_partial_index_recall.py). Recommended after "
+                         "a large import, skipped by default to keep routine "
+                         "runs fast.")
     args = ap.parse_args()
 
     logger.info("Scanning reponses_extract_etapes …")
@@ -238,7 +244,8 @@ def main() -> None:
     logger.info("Resyncing has_bureau_attribution …")
     resync_bureau_attribution_flags()
 
-    _log_recall_canary_result()
+    if args.verify_recall:
+        _log_recall_canary_result()
 
 
 def _log_recall_canary_result() -> None:

@@ -273,10 +273,12 @@ pour 3 216 pairs), auditable (provenance conservée via
 `source_etape_id`).
 
 Un import volumineux fait grossir le pool attribué que parcourent les
-index HNSW partiels (`vec_q_hnsw_direction_idx`/`vec_q_hnsw_bureau_idx`)
-— le script rejoue donc `scripts/verify_partial_index_recall.py` en fin
-d'exécution et logge un warning (sans faire échouer l'import) si le
-recall s'est dégradé.
+index HNSW partiels (`vec_q_hnsw_direction_idx`/`vec_q_hnsw_bureau_idx`).
+Avec `--verify-recall`, le script rejoue `scripts/verify_partial_index_recall.py`
+en fin d'exécution et logge un warning (sans faire échouer l'import) si le
+recall s'est dégradé — désactivé par défaut (coût : dizaines de secondes à
+quelques minutes) pour garder les runs habituels rapides ; recommandé après
+un import volumineux.
 
 ## Signalé, non résolu
 

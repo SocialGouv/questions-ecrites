@@ -13,9 +13,10 @@ wrong votes on 11/15 test questions (including changed #1-ranked bureaus);
 Re-run this after any large attribution import, or periodically as the
 attributed pool grows, to catch a recall regression before it silently
 changes real votes. It compares the production query (partial HNSW index,
-current `ef_search`) against exact brute-force search (`enable_seqscan`
-forced on, `enable_indexscan`/`enable_bitmapscan` forced off) on a random
-sample, and reports any mismatch.
+current `ef_search`, `hnsw.iterative_scan = strict_order` — matching
+qe-front's `withHnswSearch`) against exact brute-force search
+(`enable_seqscan` forced on, `enable_indexscan`/`enable_bitmapscan` forced
+off) on a random sample, and reports any mismatch.
 
 Historical trend (larger attributed pools need *less* relative ef_search,
 not more — a denser graph is easier for HNSW to navigate correctly):
@@ -128,6 +129,10 @@ def _check_one(
     conn.execute(sqltext("SET LOCAL enable_indexscan = on"))
     conn.execute(sqltext("SET LOCAL enable_bitmapscan = on"))
     conn.execute(sqltext(f"SET LOCAL hnsw.ef_search = {ef_search}"))
+    # Matches production (qe-front's withHnswSearch) — without this the
+    # partial arm here runs pgvector's default (non-iterative) scan, a
+    # different search regime than what the vote actually executes.
+    conn.execute(sqltext("SET LOCAL hnsw.iterative_scan = strict_order"))
     partial = _vote(
         conn.execute(partial_sql, {"qid": qid, "knn": knn, "vector": vector}).fetchall()
     )
