@@ -77,22 +77,22 @@ VOTERS_ENRICHED = """
 """
 
 
-def knn_top1(
-    session, src_pt_id: str, src_qid: str, voters_sql: str, use_partial_index: bool = False
-) -> int | None:
+def knn_top1(session, src_pt_id: str, src_qid: str, voters_sql: str) -> int | None:
     """Run the kNN vote for `src_qid`, return the winning direction_id.
 
-    `use_partial_index` adds production's `v.has_direction_attribution`
-    predicate so the planner can pick `vec_q_hnsw_direction_idx` instead of
-    the full index — only valid for the baseline arm, whose voters are
-    exactly the rows that flag covers. The enriched arm's MIN15-only voters
-    aren't covered by the flag, so adding it there would silently drop them.
+    Deliberately searches the full HNSW index for both arms, not the
+    `vec_q_hnsw_direction_idx` partial index production uses: the enriched
+    arm's MIN15-only voters aren't covered by `has_direction_attribution`,
+    so restricting only the baseline arm to the partial index would put the
+    two arms on different approximate-search regimes and confound the
+    reported baseline-vs-enriched delta with an index-recall delta.
+    Production-fidelity (partial index recall vs. exact search) is verified
+    separately by `verify_partial_index_recall.py`.
     """
     # SET (not SET LOCAL) is transactional — a rollback after a failed kNN
     # reverts it, so it's re-issued on every call rather than once, to avoid
     # silently falling back to the server default ef_search.
     session.execute(sqltext(f"SET hnsw.ef_search = {HNSW_EF_SEARCH}"))
-    partial_predicate = " AND v.has_direction_attribution" if use_partial_index else ""
     sql = sqltext(f"""
         WITH src AS (
             SELECT vector FROM vec_questions_opendata WHERE id = :src_pt_id
@@ -104,7 +104,7 @@ def knn_top1(
                 1 - (v.vector <=> (SELECT vector FROM src)) AS similarity
             FROM vec_questions_opendata v
             JOIN voters ON voters.question_id = v.payload ->> 'question_id'
-            WHERE v.id <> :src_pt_id{partial_predicate}
+            WHERE v.id <> :src_pt_id
             ORDER BY v.vector <=> (SELECT vector FROM src)
             LIMIT {KNN}
         )
@@ -166,9 +166,7 @@ def main() -> None:
     with db.get_session() as session:
         for src_qid, pt_id, gt_ids, gt_names in tqdm(test_items, unit="qe"):
             try:
-                pred_baseline = knn_top1(
-                    session, pt_id, src_qid, VOTERS_BASELINE, use_partial_index=True
-                )
+                pred_baseline = knn_top1(session, pt_id, src_qid, VOTERS_BASELINE)
                 pred_enriched = knn_top1(session, pt_id, src_qid, VOTERS_ENRICHED)
             except Exception as exc:
                 logger.warning("kNN failed for %s: %s", src_qid, exc)

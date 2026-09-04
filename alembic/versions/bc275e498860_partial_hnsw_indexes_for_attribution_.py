@@ -30,6 +30,16 @@ computing from the view would make the flag depend on the view refresh
 succeeding first, and a failed or late refresh would silently write a
 permanently-wrong `false`. See `qe/attributions.py`'s module docstring for
 the full reasoning.
+
+Deploy note: Alembic wraps this whole `upgrade()` in one transaction, so
+the ACCESS EXCLUSIVE lock taken by the first `add_column` is held through
+the backfill and both (non-`CONCURRENTLY` — not usable inside a
+transaction) `CREATE INDEX`es below, blocking every reader of
+`vec_questions_opendata` for the migration's full duration — the FastAPI
+`/api/questions/{id}/similar` endpoint and qe-front's direction/bureau
+attribution votes included. Measured at ~8s end to end on the ~59k-row
+corpus at the time this migration was written; run during a low-traffic
+window, and re-measure before relying on that number as the corpus grows.
 """
 
 from collections.abc import Sequence
