@@ -23,6 +23,13 @@ and `resync_bureau_attribution_flags`/`resync_direction_attribution_flags`, and
 `src/lib/attributions/refresh-view.ts`'s `refreshAttributionFlags`) rather than
 computed by the index predicate itself, because a partial index's predicate
 must be immutable and can't reference other tables.
+
+Both flags read base tables (`question_real_attributions`,
+`question_bureau_extract`), not the `question_attributions_all` view —
+computing from the view would make the flag depend on the view refresh
+succeeding first, and a failed or late refresh would silently write a
+permanently-wrong `false`. See `qe/attributions.py`'s module docstring for
+the full reasoning.
 """
 
 from collections.abc import Sequence
@@ -57,15 +64,12 @@ def upgrade() -> None:
         ),
     )
 
-    # question_attributions_all backs has_bureau_attribution below — refresh
-    # it first so the backfill doesn't read a snapshot from whenever it was
-    # last refreshed (possibly before this deploy).
-    op.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY question_attributions_all")
-
     # Guarded on the same EXISTS checks: both columns already hold the
     # correct `false` from server_default for every row that isn't
     # attributed, so only the ~13%/~6% of rows that need to flip to `true`
     # get a new tuple version (and an HNSW insert) instead of all ~59k.
+    # Reads base tables, not question_attributions_all — see the module
+    # docstring for why.
     op.execute("""
         UPDATE vec_questions_opendata v
         SET has_direction_attribution = EXISTS (
@@ -74,17 +78,21 @@ def upgrade() -> None:
                 AND qa.direction_reelle_id IS NOT NULL
             ),
             has_bureau_attribution = EXISTS (
-              SELECT 1 FROM question_attributions_all va
-              WHERE va.question_id = v.payload ->> 'question_id'
+              SELECT 1 FROM question_real_attributions qa
+              WHERE qa.question_id = v.payload ->> 'question_id'
+                AND qa.bureau_reel_id IS NOT NULL
+            ) OR EXISTS (
+              SELECT 1 FROM question_bureau_extract qbe
+              WHERE qbe.question_id = v.payload ->> 'question_id'
             )
         WHERE EXISTS (
               SELECT 1 FROM question_real_attributions qa
               WHERE qa.question_id = v.payload ->> 'question_id'
-                AND qa.direction_reelle_id IS NOT NULL
+                AND (qa.direction_reelle_id IS NOT NULL OR qa.bureau_reel_id IS NOT NULL)
             )
            OR EXISTS (
-              SELECT 1 FROM question_attributions_all va
-              WHERE va.question_id = v.payload ->> 'question_id'
+              SELECT 1 FROM question_bureau_extract qbe
+              WHERE qbe.question_id = v.payload ->> 'question_id'
             )
     """)
 
