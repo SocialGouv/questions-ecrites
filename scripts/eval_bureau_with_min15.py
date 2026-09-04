@@ -41,7 +41,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 KNN = 15
-HNSW_EF_SEARCH = 500
+HNSW_EF_SEARCH = 1000  # matches production (attributions/route.ts) as of the partial-index fix
 
 # Extract SD-code and bureau-code from a "bureaux.nom" like:
 #   "[SD2/2B] Protection de l'enfance et de l'adolescence"

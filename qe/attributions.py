@@ -6,10 +6,13 @@ Call `refresh_attributions_all_view` after writing `question_real_attributions`,
 `bureaux`, `directions`, or `question_bureau_extract`. `CONCURRENTLY` keeps the
 view readable while it refreshes (requires the unique index on `question_id`).
 
-Call `resync_bureau_attribution_flags` after a batch write to
-`question_bureau_extract` (e.g. `extract_bureau_from_min15.py`) — it can
-change which questions qualify without qe-front's per-question write paths
-knowing which ones, so this resyncs the flag for every row.
+Call `resync_bureau_attribution_flags` / `resync_direction_attribution_flags`
+after a batch write that can change which questions qualify without a
+per-question write path knowing which ones — a MIN15 extraction run
+(bureau), a bulk attribution import, or a DB restored from a dump taken
+before this module existed. Both are guarded (`IS DISTINCT FROM`), so
+they're cheap to call defensively — measured at ~0.4s over the full table
+when nothing actually changes.
 
 Call `sync_attribution_flags_for_points` after (re-)embedding a batch of
 questions — a question can already have an attribution before it's ever
@@ -52,11 +55,33 @@ def resync_bureau_attribution_flags() -> None:
         )
 
 
+def resync_direction_attribution_flags() -> None:
+    """Resync `has_direction_attribution` for every row from `question_real_attributions`."""
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE vec_questions_opendata v
+                SET has_direction_attribution = EXISTS (
+                      SELECT 1 FROM question_real_attributions qa
+                      WHERE qa.question_id = v.payload ->> 'question_id'
+                        AND qa.direction_reelle_id IS NOT NULL
+                    )
+                WHERE has_direction_attribution IS DISTINCT FROM EXISTS (
+                      SELECT 1 FROM question_real_attributions qa
+                      WHERE qa.question_id = v.payload ->> 'question_id'
+                        AND qa.direction_reelle_id IS NOT NULL
+                    )
+            """)
+        )
+
+
 def sync_attribution_flags_for_points(point_ids: Sequence[str]) -> None:
     """Set both attribution flags for exactly these `vec_questions_opendata.id`s.
 
     Point ids are the table's primary key, so this is an indexed lookup —
-    safe to call after every embed batch regardless of table size.
+    safe to call after every embed batch regardless of table size. Guarded
+    the same way as the resync helpers: a freshly-upserted row usually has
+    no attribution yet (the common case), so most calls are a no-op write.
     """
     if not point_ids:
         return
@@ -74,6 +99,17 @@ def sync_attribution_flags_for_points(point_ids: Sequence[str]) -> None:
                       WHERE va.question_id = v.payload ->> 'question_id'
                     )
                 WHERE v.id = ANY(:ids)
+                  AND (
+                    v.has_direction_attribution IS DISTINCT FROM EXISTS (
+                          SELECT 1 FROM question_real_attributions qa
+                          WHERE qa.question_id = v.payload ->> 'question_id'
+                            AND qa.direction_reelle_id IS NOT NULL
+                        )
+                    OR v.has_bureau_attribution IS DISTINCT FROM EXISTS (
+                          SELECT 1 FROM question_attributions_all va
+                          WHERE va.question_id = v.payload ->> 'question_id'
+                        )
+                  )
             """),
             {"ids": list(point_ids)},
         )
