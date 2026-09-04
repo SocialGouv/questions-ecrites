@@ -12,15 +12,17 @@ wrong votes on 11/15 test questions (including changed #1-ranked bureaus);
 
 Re-run this after any large attribution import, or periodically as the
 attributed pool grows, to catch a recall regression before it silently
-changes real votes. It compares the production query (partial HNSW index,
-current `ef_search`, `hnsw.iterative_scan = strict_order` — matching
-qe-front's `withHnswSearch`) against exact brute-force search
-(`enable_seqscan` forced on, `enable_indexscan`/`enable_bitmapscan` forced
-off) on a random sample, and reports any mismatch. Also asserts via
-`EXPLAIN` that the partial query actually scanned the expected partial
-index — `enable_seqscan = off` is only a cost penalty, so without this a
-missing/invalid/unpicked index would silently degrade the "partial" query
-to the same plan as "exact" and report a vacuous pass.
+changes real votes. It compares the partial-index query (current
+`ef_search`, plus `hnsw.iterative_scan = strict_order` — NOT currently set
+by production's `withHnswSearch`; see docs/direction-bureau-attribution.md's
+"open risk" note, this canary deliberately checks the stricter setting)
+against exact brute-force search (`enable_seqscan` forced on,
+`enable_indexscan`/`enable_bitmapscan` forced off) on a random sample, and
+reports any mismatch. Also asserts via `EXPLAIN` that the partial query
+actually scanned the expected partial index — `enable_seqscan = off` is
+only a cost penalty, so without this a missing/invalid/unpicked index
+would silently degrade the "partial" query to the same plan as "exact"
+and report a vacuous pass.
 
 Historical trend (larger attributed pools need *less* relative ef_search,
 not more — a denser graph is easier for HNSW to navigate correctly):
@@ -150,9 +152,13 @@ def _check_one(
     conn.execute(sqltext("SET LOCAL enable_indexscan = on"))
     conn.execute(sqltext("SET LOCAL enable_bitmapscan = on"))
     conn.execute(sqltext(f"SET LOCAL hnsw.ef_search = {ef_search}"))
-    # Matches production (qe-front's withHnswSearch) — without this the
-    # partial arm here runs pgvector's default (non-iterative) scan, a
-    # different search regime than what the vote actually executes.
+    # NOT currently set by production (qe-front's withHnswSearch only sets
+    # ef_search — see docs/direction-bureau-attribution.md's "open risk"
+    # note). Set here deliberately anyway: without it this arm runs
+    # pgvector's default non-iterative scan, which can under-fill the vote
+    # after the join drops candidates has_bureau_attribution's superset
+    # doesn't cover — the stricter setting this canary should be checking
+    # against, even though it's not (yet) what production runs.
     conn.execute(sqltext("SET LOCAL hnsw.iterative_scan = strict_order"))
     params = {"qid": qid, "knn": knn, "vector": vector}
     if not _plan_uses_index(conn, partial_sql, params, index_name):
