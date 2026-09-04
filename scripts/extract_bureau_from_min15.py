@@ -50,7 +50,7 @@ from qe.attributions import (
     refresh_attributions_all_view,
     resync_bureau_attribution_flags,
 )
-from verify_partial_index_recall import run_checks
+from scripts.verify_partial_index_recall import run_checks
 
 logging.basicConfig(
     level=logging.INFO,
@@ -238,17 +238,28 @@ def main() -> None:
     logger.info("Resyncing has_bureau_attribution …")
     resync_bureau_attribution_flags()
 
-    # Non-fatal: a large bureau import is exactly the kind of attributed-pool
-    # growth that can shift HNSW recall (see verify_partial_index_recall.py).
-    # Log the regression rather than failing the extraction — the flags are
-    # already correctly written above regardless of index recall.
-    mismatches = run_checks()
-    if mismatches:
-        logger.warning(
-            "Partial index recall check found %d mismatch(es) after this import — "
-            "see verify_partial_index_recall.py.",
-            mismatches,
-        )
+    _log_recall_canary_result()
+
+
+def _log_recall_canary_result() -> None:
+    """Run the partial-index recall canary and log the outcome, never raise.
+
+    Non-fatal: a large bureau import is exactly the kind of attributed-pool
+    growth that can shift HNSW recall (see verify_partial_index_recall.py).
+    Log the regression rather than failing the extraction — the flags are
+    already correctly written before this runs, regardless of index recall.
+    """
+    try:
+        mismatches = run_checks()
+    except Exception as exc:
+        logger.warning("Partial index recall check could not run: %s", exc)
+    else:
+        if mismatches:
+            logger.warning(
+                "Partial index recall check found %d mismatch(es) after this import — "
+                "see verify_partial_index_recall.py.",
+                mismatches,
+            )
 
 
 if __name__ == "__main__":
