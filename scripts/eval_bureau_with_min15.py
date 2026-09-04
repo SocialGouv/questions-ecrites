@@ -91,7 +91,16 @@ _EF_SET = False
 
 
 def knn_top1_bureau(session, src_pt_id: str, src_qid: str, voters_sql: str) -> str | None:
-    """kNN vote returning the top-1 canonical bureau key."""
+    """kNN vote returning the top-1 canonical bureau key.
+
+    Adds production's `v.has_bureau_attribution` predicate so the planner
+    can pick `vec_q_hnsw_bureau_idx` instead of the full index. Safe for
+    both arms here (unlike the direction eval): the flag is defined as
+    EXISTS(question_real_attributions.bureau_reel_id) OR
+    EXISTS(question_bureau_extract) — exactly the union both the baseline
+    and enriched voter tables are built from, so every voter already
+    satisfies it.
+    """
     global _EF_SET
     if not _EF_SET:
         session.execute(sqltext(f"SET hnsw.ef_search = {HNSW_EF_SEARCH}"))
@@ -107,7 +116,7 @@ def knn_top1_bureau(session, src_pt_id: str, src_qid: str, voters_sql: str) -> s
                 1 - (v.vector <=> (SELECT vector FROM src)) AS similarity
             FROM vec_questions_opendata v
             JOIN voters ON voters.question_id = v.payload ->> 'question_id'
-            WHERE v.id <> :src_pt_id
+            WHERE v.id <> :src_pt_id AND v.has_bureau_attribution
             ORDER BY v.vector <=> (SELECT vector FROM src)
             LIMIT {KNN}
         )

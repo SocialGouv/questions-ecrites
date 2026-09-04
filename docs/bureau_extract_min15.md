@@ -272,6 +272,12 @@ Idempotent (upsert par `(question_id, direction_txt)`), rapide (~4s
 pour 3 216 pairs), auditable (provenance conservée via
 `source_etape_id`).
 
+Un import volumineux fait grossir le pool attribué que parcourent les
+index HNSW partiels (`vec_q_hnsw_direction_idx`/`vec_q_hnsw_bureau_idx`)
+— le script rejoue donc `scripts/verify_partial_index_recall.py` en fin
+d'exécution et logge un warning (sans faire échouer l'import) si le
+recall s'est dégradé.
+
 ## Signalé, non résolu
 
 - **Les 5 lignes DFAS + 2 DARES + 2 DRH + 1 HDH** dans

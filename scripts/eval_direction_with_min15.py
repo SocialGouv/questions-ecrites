@@ -80,12 +80,22 @@ VOTERS_ENRICHED = """
 _EF_SEARCH_SET = False
 
 
-def knn_top1(session, src_pt_id: str, src_qid: str, voters_sql: str) -> int | None:
-    """Run the kNN vote for `src_qid`, return the winning direction_id."""
+def knn_top1(
+    session, src_pt_id: str, src_qid: str, voters_sql: str, use_partial_index: bool = False
+) -> int | None:
+    """Run the kNN vote for `src_qid`, return the winning direction_id.
+
+    `use_partial_index` adds production's `v.has_direction_attribution`
+    predicate so the planner can pick `vec_q_hnsw_direction_idx` instead of
+    the full index — only valid for the baseline arm, whose voters are
+    exactly the rows that flag covers. The enriched arm's MIN15-only voters
+    aren't covered by the flag, so adding it there would silently drop them.
+    """
     global _EF_SEARCH_SET
     if not _EF_SEARCH_SET:
         session.execute(sqltext(f"SET hnsw.ef_search = {HNSW_EF_SEARCH}"))
         _EF_SEARCH_SET = True
+    partial_predicate = " AND v.has_direction_attribution" if use_partial_index else ""
     sql = sqltext(f"""
         WITH src AS (
             SELECT vector FROM vec_questions_opendata WHERE id = :src_pt_id
@@ -97,7 +107,7 @@ def knn_top1(session, src_pt_id: str, src_qid: str, voters_sql: str) -> int | No
                 1 - (v.vector <=> (SELECT vector FROM src)) AS similarity
             FROM vec_questions_opendata v
             JOIN voters ON voters.question_id = v.payload ->> 'question_id'
-            WHERE v.id <> :src_pt_id
+            WHERE v.id <> :src_pt_id{partial_predicate}
             ORDER BY v.vector <=> (SELECT vector FROM src)
             LIMIT {KNN}
         )
@@ -159,7 +169,9 @@ def main() -> None:
     with db.get_session() as session:
         for src_qid, pt_id, gt_ids, gt_names in tqdm(test_items, unit="qe"):
             try:
-                pred_baseline = knn_top1(session, pt_id, src_qid, VOTERS_BASELINE)
+                pred_baseline = knn_top1(
+                    session, pt_id, src_qid, VOTERS_BASELINE, use_partial_index=True
+                )
                 pred_enriched = knn_top1(session, pt_id, src_qid, VOTERS_ENRICHED)
             except Exception as exc:
                 logger.warning("kNN failed for %s: %s", src_qid, exc)
