@@ -102,10 +102,13 @@ def knn_top1_bureau(session, src_pt_id: str, src_qid: str, voters_sql: str) -> s
     # reverts it, so it's re-issued on every call rather than once, to avoid
     # silently falling back to the server default ef_search.
     session.execute(sqltext(f"SET hnsw.ef_search = {HNSW_EF_SEARCH}"))
-    # Matches production (qe-front's withHnswSearch) and verify_partial_index_recall.
-    # Without it, pgvector's non-iterative scan caps candidates at ef_search *before*
-    # the `JOIN voters` post-filter, which can under-fill the KNN vote in the baseline
-    # arm — its voter set is a strict subset of vec_q_hnsw_bureau_idx's membership.
+    # NOT currently set by production (qe-front's withHnswSearch only sets
+    # ef_search — see docs/direction-bureau-attribution.md's "open risk" note)
+    # but set here and in verify_partial_index_recall because without it,
+    # pgvector's non-iterative scan caps candidates at ef_search *before* the
+    # `JOIN voters` post-filter, which can under-fill the KNN vote in the
+    # baseline arm — its voter set is a strict subset of
+    # vec_q_hnsw_bureau_idx's membership.
     session.execute(sqltext("SET hnsw.iterative_scan = strict_order"))
     sql = sqltext(f"""
         WITH src AS (
