@@ -16,7 +16,11 @@ changes real votes. It compares the production query (partial HNSW index,
 current `ef_search`, `hnsw.iterative_scan = strict_order` — matching
 qe-front's `withHnswSearch`) against exact brute-force search
 (`enable_seqscan` forced on, `enable_indexscan`/`enable_bitmapscan` forced
-off) on a random sample, and reports any mismatch.
+off) on a random sample, and reports any mismatch. Also asserts via
+`EXPLAIN` that the partial query actually scanned the expected partial
+index — `enable_seqscan = off` is only a cost penalty, so without this a
+missing/invalid/unpicked index would silently degrade the "partial" query
+to the same plan as "exact" and report a vacuous pass.
 
 Historical trend (larger attributed pools need *less* relative ef_search,
 not more — a denser graph is easier for HNSW to navigate correctly):
@@ -110,8 +114,25 @@ def _vote(rows) -> dict[object, float]:
     return votes
 
 
+def _plan_uses_index(conn, sql, params: dict, index_name: str) -> bool:
+    """Return True if EXPLAIN shows `index_name` in the plan for `sql`.
+
+    `enable_seqscan = off` is a cost penalty, not a prohibition — if the
+    partial index is missing, invalid, or simply not chosen by the planner,
+    the "partial" query silently falls back to the same plan as "exact",
+    and the two votes then match by construction. This runs under the same
+    GUCs as the real query (planning only, no `ANALYZE`, so it doesn't
+    execute the scan).
+    """
+    explain_sql = sqltext(f"EXPLAIN (FORMAT JSON) {sql.text}").bindparams(
+        bindparam("vector", type_=Vector())
+    )
+    plan = conn.execute(explain_sql, params).scalar_one()
+    return index_name in str(plan)
+
+
 def _check_one(
-    conn, qid: str, exact_sql, partial_sql, knn: int, ef_search: int
+    conn, qid: str, exact_sql, partial_sql, knn: int, ef_search: int, index_name: str
 ) -> bool:
     """Return True if the partial-index vote matches exact search."""
     # Resolved before touching enable_indexscan/enable_bitmapscan below, so
@@ -133,9 +154,14 @@ def _check_one(
     # partial arm here runs pgvector's default (non-iterative) scan, a
     # different search regime than what the vote actually executes.
     conn.execute(sqltext("SET LOCAL hnsw.iterative_scan = strict_order"))
-    partial = _vote(
-        conn.execute(partial_sql, {"qid": qid, "knn": knn, "vector": vector}).fetchall()
-    )
+    params = {"qid": qid, "knn": knn, "vector": vector}
+    if not _plan_uses_index(conn, partial_sql, params, index_name):
+        raise AssertionError(
+            f"partial query for qid={qid} did not use {index_name} — "
+            "recall check would pass vacuously; is the index missing, "
+            "invalid, or not being picked by the planner?"
+        )
+    partial = _vote(conn.execute(partial_sql, params).fetchall())
 
     def round4(votes: dict[object, float]) -> dict[object, float]:
         return {k: round(v, 4) for k, v in votes.items()}
@@ -165,15 +191,23 @@ def run_checks(sample_size: int = 30) -> int:
         ),
     }
 
-    for label, exact_sql, partial_sql, knn, ef_search in [
+    for label, exact_sql, partial_sql, knn, ef_search, index_name in [
         (
             "direction",
             DIRECTION_EXACT_SQL,
             DIRECTION_PARTIAL_SQL,
             DIRECTION_KNN,
             DIRECTION_EF_SEARCH,
+            "vec_q_hnsw_direction_idx",
         ),
-        ("bureau", BUREAU_EXACT_SQL, BUREAU_PARTIAL_SQL, BUREAU_KNN, BUREAU_EF_SEARCH),
+        (
+            "bureau",
+            BUREAU_EXACT_SQL,
+            BUREAU_PARTIAL_SQL,
+            BUREAU_KNN,
+            BUREAU_EF_SEARCH,
+            "vec_q_hnsw_bureau_idx",
+        ),
     ]:
         with engine.connect() as conn:
             sample = (
@@ -184,7 +218,9 @@ def run_checks(sample_size: int = 30) -> int:
         mismatches = 0
         for qid in sample:
             with engine.begin() as conn:
-                if not _check_one(conn, qid, exact_sql, partial_sql, knn, ef_search):
+                if not _check_one(
+                    conn, qid, exact_sql, partial_sql, knn, ef_search, index_name
+                ):
                     mismatches += 1
                     logger.warning("MISMATCH (%s): %s", label, qid)
 
