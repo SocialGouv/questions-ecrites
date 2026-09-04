@@ -127,13 +127,8 @@ def _check_one(
     return round4(exact) == round4(partial)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    ap.add_argument("--sample-size", type=int, default=30)
-    args = ap.parse_args()
-
+def run_checks(sample_size: int = 30) -> int:
+    """Run the direction+bureau recall check, return the total mismatch count."""
     engine = db.get_engine()
     failures = 0
 
@@ -166,7 +161,7 @@ def main() -> None:
     ]:
         with engine.connect() as conn:
             sample = (
-                conn.execute(sample_sql[label], {"n": args.sample_size}).scalars().all()
+                conn.execute(sample_sql[label], {"n": sample_size}).scalars().all()
             )
             pool_size = conn.execute(pool_size_sql[label]).scalar_one()
 
@@ -187,6 +182,17 @@ def main() -> None:
         )
         failures += mismatches
 
+    return failures
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("--sample-size", type=int, default=30)
+    args = ap.parse_args()
+
+    failures = run_checks(args.sample_size)
     if failures:
         logger.error(
             "%d total mismatch(es) — partial index recall has regressed.", failures
