@@ -87,9 +87,6 @@ def _point_id(qid: str) -> str:
     return str(UUID(hashlib.sha256(qid.encode("utf-8")).hexdigest()[:32]))
 
 
-_EF_SET = False
-
-
 def knn_top1_bureau(session, src_pt_id: str, src_qid: str, voters_sql: str) -> str | None:
     """kNN vote returning the top-1 canonical bureau key.
 
@@ -101,10 +98,10 @@ def knn_top1_bureau(session, src_pt_id: str, src_qid: str, voters_sql: str) -> s
     and enriched voter tables are built from, so every voter already
     satisfies it.
     """
-    global _EF_SET
-    if not _EF_SET:
-        session.execute(sqltext(f"SET hnsw.ef_search = {HNSW_EF_SEARCH}"))
-        _EF_SET = True
+    # SET (not SET LOCAL) is transactional — a rollback after a failed kNN
+    # reverts it, so it's re-issued on every call rather than once, to avoid
+    # silently falling back to the server default ef_search.
+    session.execute(sqltext(f"SET hnsw.ef_search = {HNSW_EF_SEARCH}"))
     sql = sqltext(f"""
         WITH src AS (
             SELECT vector FROM vec_questions_opendata WHERE id = :src_pt_id

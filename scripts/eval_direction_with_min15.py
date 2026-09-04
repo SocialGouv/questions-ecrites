@@ -77,9 +77,6 @@ VOTERS_ENRICHED = """
 """
 
 
-_EF_SEARCH_SET = False
-
-
 def knn_top1(
     session, src_pt_id: str, src_qid: str, voters_sql: str, use_partial_index: bool = False
 ) -> int | None:
@@ -91,10 +88,10 @@ def knn_top1(
     exactly the rows that flag covers. The enriched arm's MIN15-only voters
     aren't covered by the flag, so adding it there would silently drop them.
     """
-    global _EF_SEARCH_SET
-    if not _EF_SEARCH_SET:
-        session.execute(sqltext(f"SET hnsw.ef_search = {HNSW_EF_SEARCH}"))
-        _EF_SEARCH_SET = True
+    # SET (not SET LOCAL) is transactional — a rollback after a failed kNN
+    # reverts it, so it's re-issued on every call rather than once, to avoid
+    # silently falling back to the server default ef_search.
+    session.execute(sqltext(f"SET hnsw.ef_search = {HNSW_EF_SEARCH}"))
     partial_predicate = " AND v.has_direction_attribution" if use_partial_index else ""
     sql = sqltext(f"""
         WITH src AS (

@@ -33,6 +33,8 @@ import argparse
 import logging
 import sys
 
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import bindparam
 from sqlalchemy import text as sqltext
 
 from qe import db
@@ -54,49 +56,50 @@ BUREAU_EF_SEARCH = 1000
 DIRECTION_KNN = 15
 BUREAU_KNN = 25
 
+# Source vector for `:qid`, fetched once per check while index scans are
+# still on (see `_check_one`) — the EXACT_SQL/PARTIAL_SQL queries below take
+# it as a `:vector` bind param instead of re-looking it up inline, so that
+# forcing `enable_indexscan = off` for the exact half doesn't also force a
+# full-table scan for the self-lookup.
+SRC_VECTOR_SQL = sqltext(
+    "SELECT vector FROM vec_questions_opendata WHERE id = :qid"
+).columns(vector=Vector())
+
 DIRECTION_EXACT_SQL = sqltext("""
-    SELECT qa.direction_reelle_id AS key, 1 - (v.vector <=> (
-        SELECT vector FROM vec_questions_opendata WHERE id = :qid
-    )) AS similarity
+    SELECT qa.direction_reelle_id AS key, 1 - (v.vector <=> :vector) AS similarity
     FROM vec_questions_opendata v
     JOIN question_real_attributions qa ON qa.question_id = v.payload ->> 'question_id'
     WHERE v.id <> :qid AND qa.direction_reelle_id IS NOT NULL
-    ORDER BY v.vector <=> (SELECT vector FROM vec_questions_opendata WHERE id = :qid)
+    ORDER BY v.vector <=> :vector
     LIMIT :knn
-""")
+""").bindparams(bindparam("vector", type_=Vector()))
 
 DIRECTION_PARTIAL_SQL = sqltext("""
-    SELECT qa.direction_reelle_id AS key, 1 - (v.vector <=> (
-        SELECT vector FROM vec_questions_opendata WHERE id = :qid
-    )) AS similarity
+    SELECT qa.direction_reelle_id AS key, 1 - (v.vector <=> :vector) AS similarity
     FROM vec_questions_opendata v
     JOIN question_real_attributions qa ON qa.question_id = v.payload ->> 'question_id'
     WHERE v.id <> :qid AND v.has_direction_attribution AND qa.direction_reelle_id IS NOT NULL
-    ORDER BY v.vector <=> (SELECT vector FROM vec_questions_opendata WHERE id = :qid)
+    ORDER BY v.vector <=> :vector
     LIMIT :knn
-""")
+""").bindparams(bindparam("vector", type_=Vector()))
 
 BUREAU_EXACT_SQL = sqltext("""
-    SELECT va.bureau_key AS key, 1 - (v.vector <=> (
-        SELECT vector FROM vec_questions_opendata WHERE id = :qid
-    )) AS similarity
+    SELECT va.bureau_key AS key, 1 - (v.vector <=> :vector) AS similarity
     FROM vec_questions_opendata v
     JOIN question_attributions_all va ON va.question_id = v.payload ->> 'question_id'
     WHERE v.id <> :qid
-    ORDER BY v.vector <=> (SELECT vector FROM vec_questions_opendata WHERE id = :qid)
+    ORDER BY v.vector <=> :vector
     LIMIT :knn
-""")
+""").bindparams(bindparam("vector", type_=Vector()))
 
 BUREAU_PARTIAL_SQL = sqltext("""
-    SELECT va.bureau_key AS key, 1 - (v.vector <=> (
-        SELECT vector FROM vec_questions_opendata WHERE id = :qid
-    )) AS similarity
+    SELECT va.bureau_key AS key, 1 - (v.vector <=> :vector) AS similarity
     FROM vec_questions_opendata v
     JOIN question_attributions_all va ON va.question_id = v.payload ->> 'question_id'
     WHERE v.id <> :qid AND v.has_bureau_attribution
-    ORDER BY v.vector <=> (SELECT vector FROM vec_questions_opendata WHERE id = :qid)
+    ORDER BY v.vector <=> :vector
     LIMIT :knn
-""")
+""").bindparams(bindparam("vector", type_=Vector()))
 
 
 def _vote(rows) -> dict[object, float]:
@@ -110,16 +113,24 @@ def _check_one(
     conn, qid: str, exact_sql, partial_sql, knn: int, ef_search: int
 ) -> bool:
     """Return True if the partial-index vote matches exact search."""
+    # Resolved before touching enable_indexscan/enable_bitmapscan below, so
+    # this PK lookup stays an index scan rather than a full table scan.
+    vector = conn.execute(SRC_VECTOR_SQL, {"qid": qid}).scalar_one()
+
     conn.execute(sqltext("SET LOCAL enable_seqscan = on"))
     conn.execute(sqltext("SET LOCAL enable_indexscan = off"))
     conn.execute(sqltext("SET LOCAL enable_bitmapscan = off"))
-    exact = _vote(conn.execute(exact_sql, {"qid": qid, "knn": knn}).fetchall())
+    exact = _vote(
+        conn.execute(exact_sql, {"qid": qid, "knn": knn, "vector": vector}).fetchall()
+    )
 
     conn.execute(sqltext("SET LOCAL enable_seqscan = off"))
     conn.execute(sqltext("SET LOCAL enable_indexscan = on"))
     conn.execute(sqltext("SET LOCAL enable_bitmapscan = on"))
     conn.execute(sqltext(f"SET LOCAL hnsw.ef_search = {ef_search}"))
-    partial = _vote(conn.execute(partial_sql, {"qid": qid, "knn": knn}).fetchall())
+    partial = _vote(
+        conn.execute(partial_sql, {"qid": qid, "knn": knn, "vector": vector}).fetchall()
+    )
 
     def round4(votes: dict[object, float]) -> dict[object, float]:
         return {k: round(v, 4) for k, v in votes.items()}
