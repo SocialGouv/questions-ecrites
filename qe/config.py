@@ -19,6 +19,11 @@ class Settings:
     albert_rerank_model: str
     albert_embedding_model: str
     albert_embeddings_url: str
+    # qe-front's precompute route (docs/llm-judge-caching-plan.md Phase 2,
+    # qe-front repo). Optional — not in `missing` below, since precompute
+    # is best-effort and the ingestion pipeline must still run without it.
+    qe_front_base_url: str
+    qe_front_internal_token: str
 
 
 def get_settings() -> Settings:
@@ -35,12 +40,16 @@ def get_settings() -> Settings:
     Raises ValueError if required variables are missing.
     """
     albert_api_key = os.environ.get("ALBERT_API_KEY", "")
-    albert_base_url = os.environ.get("ALBERT_BASE_URL", "https://albert.api.etalab.gouv.fr")
+    albert_base_url = os.environ.get(
+        "ALBERT_BASE_URL", "https://albert.api.etalab.gouv.fr"
+    )
     albert_rerank_model = os.environ.get("ALBERT_RERANK_MODEL", "openweight-rerank")
     albert_embedding_model = os.environ.get("ALBERT_EMBEDDING_MODEL", "BAAI/bge-m3")
     albert_embeddings_url = os.environ.get("ALBERT_EMBEDDINGS_URL", "") or (
         f"{albert_base_url.rstrip('/')}/v1/embeddings"
     )
+    qe_front_base_url = os.environ.get("QE_FRONT_BASE_URL", "")
+    qe_front_internal_token = os.environ.get("INTERNAL_API_TOKEN", "")
 
     missing: list[str] = []
     if not albert_api_key:
@@ -57,6 +66,8 @@ def get_settings() -> Settings:
         albert_rerank_model=albert_rerank_model,
         albert_embedding_model=albert_embedding_model,
         albert_embeddings_url=albert_embeddings_url,
+        qe_front_base_url=qe_front_base_url,
+        qe_front_internal_token=qe_front_internal_token,
     )
 
 
