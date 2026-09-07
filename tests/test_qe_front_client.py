@@ -14,10 +14,10 @@ from qe.clients.qe_front_client import QeFrontClient
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int, payload: dict | None = None):
+    def __init__(self, status_code: int, payload: object = None):
         self.status_code = status_code
         self.ok = status_code < 400
-        self._payload = payload or {}
+        self._payload = payload if payload is not None else {}
 
     def json(self):
         return self._payload
@@ -58,5 +58,15 @@ def test_returns_none_on_http_error_without_raising():
 
 def test_returns_none_on_transport_error_without_raising():
     client = _ScriptedClient([requests.ConnectionError("connection refused")])
+    result = client.precompute_similar_cache(limit=50)
+    assert result is None
+
+
+def test_returns_none_when_the_response_body_is_not_a_json_object():
+    # A 200 whose body is a JSON array/string/number is not a RequestException
+    # and would otherwise pass through as-is, breaking the caller's `.get()`
+    # calls (embed_questions.py:505) with an AttributeError the fail-open
+    # contract is supposed to prevent.
+    client = _ScriptedClient([_FakeResponse(200, ["not", "a", "dict"])])
     result = client.precompute_similar_cache(limit=50)
     assert result is None
