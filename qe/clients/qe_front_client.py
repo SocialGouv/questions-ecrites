@@ -45,7 +45,8 @@ class QeFrontClient:
         try:
             response = self._post({"limit": limit})
             response.raise_for_status()
-            return response.json()
+            payload = response.json()
+            return payload if isinstance(payload, dict) else None
         except requests.RequestException as exc:
             logger.warning("qe-front precompute call failed: %s", exc)
             return None
