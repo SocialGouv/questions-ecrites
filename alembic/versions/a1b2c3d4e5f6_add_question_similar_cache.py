@@ -71,9 +71,21 @@ def upgrade() -> None:
         "question_similar_cache",
         ["source_question_id", "model", "verdict", "score"],
     )
+    # Backs the ON DELETE CASCADE from questions.id on the candidate side —
+    # the PK index and the fulllist index above both lead with
+    # source_question_id, so without this a cascading delete on `questions`
+    # would sequentially scan this table once per deleted row.
+    op.create_index(
+        "question_similar_cache_candidate_idx",
+        "question_similar_cache",
+        ["candidate_question_id"],
+    )
 
 
 def downgrade() -> None:
+    op.drop_index(
+        "question_similar_cache_candidate_idx", table_name="question_similar_cache"
+    )
     op.drop_index(
         "question_similar_cache_fulllist_idx", table_name="question_similar_cache"
     )

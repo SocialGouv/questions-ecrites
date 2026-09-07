@@ -66,6 +66,7 @@ _QE_FRONT_TABLES = {
     "bureaux",
     "question_real_attributions",
     "question_similar_suggestions",
+    "question_similar_cache",
     "suggestion_feedback",
     "correction_feedback",
     "app_settings",
