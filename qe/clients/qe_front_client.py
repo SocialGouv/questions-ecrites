@@ -73,37 +73,69 @@ class QeFrontClient:
         otherwise. Nothing is lost or double-counted between runs.
 
         Stops when: the backlog is drained (a batch reports `processed ==
-        0`), a batch made no cached progress (`cached == 0` — whether every
-        question errored, or every question was attempted but produced
-        nothing to cache, e.g. no candidate cleared the judge threshold — in
-        either case the anti-join is unchanged, so the next batch would just
-        re-select the exact same questions), a batch call fails outright
-        (already logged by `precompute_similar_cache` — best-effort, try
-        again next run), or `max_duration_seconds` elapses (a safety bound so
-        one unusually large backlog can't consume the whole ingestion job's
-        time budget).
+        0`), every question errored (`errors >= processed` — the anti-join
+        is unchanged, so the next batch would just re-select the same
+        failing questions), a batch made no progress of any kind (`cached
+        == 0` AND `empty == 0` — nothing was written to
+        question_similar_cache, but also no question_similar_precompute_empty
+        tombstone was recorded either, e.g. an older qe-front that doesn't
+        report `empty` yet — so the anti-join is unchanged and the next
+        batch would just re-select the same questions), a batch call fails
+        outright (already logged by `precompute_similar_cache` —
+        best-effort, try again next run), or `max_duration_seconds` elapses
+        (a safety bound so one unusually large backlog can't consume the
+        whole ingestion job's time budget).
+
+        `empty` (a question genuinely attempted and found to have nothing
+        worth caching, recorded as a tombstone so the anti-join stops
+        re-selecting it — see qe-front's question_similar_precompute_empty)
+        counts as progress on its own even when `cached` is 0: a batch of
+        entirely tombstoned questions still shrinks the backlog for the
+        *next* batch, unlike the old cached-only check which would stop
+        after just one such batch and leave the rest of a same-shaped
+        backlog for a future run.
         """
         started = _clock()
-        totals = {"batches": 0, "processed": 0, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 0}
+        totals = {
+            "batches": 0,
+            "processed": 0,
+            "cached": 0,
+            "empty": 0,
+            "reciprocal": 0,
+            "pruned": 0,
+            "errors": 0,
+        }
         while _clock() - started < max_duration_seconds:
             result = self.precompute_similar_cache(limit=batch_limit)
             if result is None:
                 break
             totals["batches"] += 1
-            for key in ("processed", "cached", "reciprocal", "pruned", "errors"):
+            for key in (
+                "processed",
+                "cached",
+                "empty",
+                "reciprocal",
+                "pruned",
+                "errors",
+            ):
                 value = result.get(key, 0)
                 totals[key] += value if isinstance(value, int) else 0
             processed = result.get("processed", 0)
             errors = result.get("errors", 0)
             cached = result.get("cached", 0)
+            empty = result.get("empty", 0)
             if not isinstance(processed, int) or processed == 0:
                 break
             if isinstance(errors, int) and errors >= processed:
                 break
-            if not isinstance(cached, int) or cached == 0:
+            made_progress = (isinstance(cached, int) and cached > 0) or (
+                isinstance(empty, int) and empty > 0
+            )
+            if not made_progress:
                 logger.warning(
-                    "qe-front precompute: batch processed %d question(s) but cached none; "
-                    "stopping to avoid re-selecting the same questions every batch.",
+                    "qe-front precompute: batch processed %d question(s) but made no progress "
+                    "(nothing cached, nothing tombstoned); stopping to avoid re-selecting the "
+                    "same questions every batch.",
                     processed,
                 )
                 break
