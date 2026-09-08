@@ -67,6 +67,7 @@ _QE_FRONT_TABLES = {
     "question_real_attributions",
     "question_similar_suggestions",
     "question_similar_cache",
+    "question_similar_precompute_empty",
     "suggestion_feedback",
     "correction_feedback",
     "app_settings",
