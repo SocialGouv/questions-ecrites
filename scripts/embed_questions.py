@@ -76,11 +76,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_COLLECTION = "questions_opendata"
 DEFAULT_BATCH_SIZE = 32
 
-# Questions precomputed per run against qe-front's similar-cache route
-# (docs/llm-judge-caching-plan.md Phase 2) — matches that route's own
-# DEFAULT_LIMIT; kept modest since this call is synchronous at the end
-# of the run and each question pays a live rerank+judge cost.
-PRECOMPUTE_LIMIT = 50
+# Batched precompute against qe-front's similar-cache route (docs/llm-judge-
+# caching-plan.md Phase 2), synchronous at the end of the run. Looped in
+# PRECOMPUTE_BATCH_LIMIT-sized batches (matches that route's own DEFAULT_LIMIT)
+# until the backlog is drained or PRECOMPUTE_MAX_DURATION_SECONDS elapses, so
+# a day with hundreds of newly-EN_COURS questions — or the very first run,
+# backfilling every pre-existing EN_COURS question — gets fully caught up
+# instead of being capped at one batch.
+PRECOMPUTE_BATCH_LIMIT = 50
+PRECOMPUTE_MAX_DURATION_SECONDS = 1200  # 20 min — leaves room in the 1h ingestion job deadline
 
 # Server-side cursor page size for _iter_questions — independent of
 # --batch-size (the embedding API batch size). Only these columns are
@@ -335,8 +339,9 @@ def embed_questions(  # noqa: C901
         date_to: If set, only embed questions published on or before this date.
         batch_size: Number of questions per embedding API call.
         rate_limiter: Optional global rate limiter (API calls/min).
-        qe_front_client: If set, triggers a qe-front similar-cache precompute
-            batch at the end of the run (Phase 2). None = skip (unconfigured).
+        qe_front_client: If set, drains the qe-front similar-cache precompute
+            backlog in batches at the end of the run (Phase 2). None = skip
+            (unconfigured).
     """
     existing = _load_existing_points(vector_store, collection)
 
@@ -497,17 +502,20 @@ def embed_questions(  # noqa: C901
     resync_bureau_attribution_flags()
 
     if qe_front_client is not None:
-        result = qe_front_client.precompute_similar_cache(limit=PRECOMPUTE_LIMIT)
-        if result is not None:
-            logger.info(
-                "qe-front precompute: %d processed, %d cached, %d reciprocal, "
-                "%d pruned, %d errors.",
-                result.get("processed", 0),
-                result.get("cached", 0),
-                result.get("reciprocal", 0),
-                result.get("pruned", 0),
-                result.get("errors", 0),
-            )
+        result = qe_front_client.precompute_similar_cache_batches(
+            batch_limit=PRECOMPUTE_BATCH_LIMIT,
+            max_duration_seconds=PRECOMPUTE_MAX_DURATION_SECONDS,
+        )
+        logger.info(
+            "qe-front precompute: %d batch(es), %d processed, %d cached, "
+            "%d reciprocal, %d pruned, %d errors.",
+            result["batches"],
+            result["processed"],
+            result["cached"],
+            result["reciprocal"],
+            result["pruned"],
+            result["errors"],
+        )
 
 
 def main() -> None:

@@ -12,6 +12,8 @@ without a warm cache (Phase 1).
 from __future__ import annotations
 
 import logging
+import time
+from typing import Callable
 
 import requests
 
@@ -50,3 +52,48 @@ class QeFrontClient:
         except requests.RequestException as exc:
             logger.warning("qe-front precompute call failed: %s", exc)
             return None
+
+    def precompute_similar_cache_batches(
+        self,
+        *,
+        batch_limit: int,
+        max_duration_seconds: float,
+        _clock: Callable[[], float] = time.monotonic,
+    ) -> dict:
+        """Drain the precompute backlog in batches of `batch_limit`.
+
+        The route always selects the oldest still-missing questions first
+        (a NOT EXISTS anti-join on question_similar_cache), so each batch
+        makes forward progress and never repeats work a previous batch (or a
+        previous run) already finished. That makes it safe to just keep
+        calling: a backlog bigger than one batch — the very first run,
+        backfilling every pre-existing EN_COURS question, or an ordinary day
+        with hundreds of newly-embedded ones — gets fully cleared within this
+        run if it fits the time budget, or picked up again by the next run
+        otherwise. Nothing is lost or double-counted between runs.
+
+        Stops when: the backlog is drained (a batch reports `processed ==
+        0`), a batch call fails outright (already logged by
+        `precompute_similar_cache` — best-effort, try again next run), or
+        `max_duration_seconds` elapses (a safety bound so one unusually large
+        backlog can't consume the whole ingestion job's time budget).
+        """
+        started = _clock()
+        totals = {"batches": 0, "processed": 0, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 0}
+        while _clock() - started < max_duration_seconds:
+            result = self.precompute_similar_cache(limit=batch_limit)
+            if result is None:
+                break
+            totals["batches"] += 1
+            for key in ("processed", "cached", "reciprocal", "pruned", "errors"):
+                totals[key] += result.get(key, 0)
+            if result.get("processed", 0) == 0:
+                break
+        else:
+            logger.warning(
+                "qe-front precompute: time budget (%.0fs) reached after %d batch(es); "
+                "backlog may not be fully drained, continuing next run.",
+                max_duration_seconds,
+                totals["batches"],
+            )
+        return totals
