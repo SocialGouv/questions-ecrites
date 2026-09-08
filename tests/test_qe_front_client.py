@@ -92,7 +92,7 @@ def test_batches_drains_the_backlog_across_multiple_calls():
         batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0, 0, 0])
     )
     assert result == {"batches": 3, "processed": 100, "cached": 70, "reciprocal": 7, "pruned": 1, "errors": 1}
-    assert len(client.calls) == 3
+    assert client.calls == [{"limit": 50}, {"limit": 50}, {"limit": 50}]
 
 
 def test_batches_stops_once_the_time_budget_elapses():
@@ -110,7 +110,7 @@ def test_batches_stops_once_the_time_budget_elapses():
     )
     assert result["batches"] == 2
     assert result["processed"] == 100
-    assert len(client.calls) == 2
+    assert client.calls == [{"limit": 50}, {"limit": 50}]
 
 
 def test_batches_stops_immediately_on_transport_failure_without_looping_forever():
@@ -119,4 +119,37 @@ def test_batches_stops_immediately_on_transport_failure_without_looping_forever(
         batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0])
     )
     assert result == {"batches": 0, "processed": 0, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 0}
-    assert len(client.calls) == 1
+    assert client.calls == [{"limit": 50}]
+
+
+def test_batches_stops_when_a_batch_makes_no_cached_progress():
+    # First batch: every attempted question errored out (errors == processed) —
+    # the anti-join would just re-select the same failing questions forever,
+    # so the loop must give up instead of spinning for the full time budget.
+    client = _ScriptedClient(
+        [
+            _FakeResponse(200, {"processed": 50, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 50}),
+            _FakeResponse(200, {"processed": 50, "cached": 50, "reciprocal": 0, "pruned": 0, "errors": 0}),
+        ]
+    )
+    result = client.precompute_similar_cache_batches(
+        batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0])
+    )
+    assert result == {"batches": 1, "processed": 50, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 50}
+    assert client.calls == [{"limit": 50}]
+
+
+def test_batches_treats_non_int_counters_as_zero_instead_of_raising():
+    # A malformed response body (e.g. a null field) must not raise inside
+    # the arithmetic — this call is best-effort, same contract as a
+    # transport failure.
+    client = _ScriptedClient(
+        [
+            _FakeResponse(200, {"processed": None, "cached": 3, "reciprocal": 0, "pruned": 0, "errors": 0}),
+        ]
+    )
+    result = client.precompute_similar_cache_batches(
+        batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0])
+    )
+    assert result == {"batches": 1, "processed": 0, "cached": 3, "reciprocal": 0, "pruned": 0, "errors": 0}
+    assert client.calls == [{"limit": 50}]

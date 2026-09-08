@@ -73,10 +73,13 @@ class QeFrontClient:
         otherwise. Nothing is lost or double-counted between runs.
 
         Stops when: the backlog is drained (a batch reports `processed ==
-        0`), a batch call fails outright (already logged by
-        `precompute_similar_cache` — best-effort, try again next run), or
-        `max_duration_seconds` elapses (a safety bound so one unusually large
-        backlog can't consume the whole ingestion job's time budget).
+        0`), a batch made no cached progress (every attempted question
+        errored — `errors >= processed` — so the anti-join would just
+        re-select the same failing questions forever), a batch call fails
+        outright (already logged by `precompute_similar_cache` — best-effort,
+        try again next run), or `max_duration_seconds` elapses (a safety
+        bound so one unusually large backlog can't consume the whole
+        ingestion job's time budget).
         """
         started = _clock()
         totals = {"batches": 0, "processed": 0, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 0}
@@ -86,8 +89,13 @@ class QeFrontClient:
                 break
             totals["batches"] += 1
             for key in ("processed", "cached", "reciprocal", "pruned", "errors"):
-                totals[key] += result.get(key, 0)
-            if result.get("processed", 0) == 0:
+                value = result.get(key, 0)
+                totals[key] += value if isinstance(value, int) else 0
+            processed = result.get("processed", 0)
+            errors = result.get("errors", 0)
+            if not isinstance(processed, int) or processed == 0:
+                break
+            if isinstance(errors, int) and errors >= processed:
                 break
         else:
             logger.warning(
