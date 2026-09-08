@@ -83,15 +83,53 @@ def test_batches_drains_the_backlog_across_multiple_calls():
     # the backlog is smaller than batch_limit * 2 but bigger than one batch.
     client = _ScriptedClient(
         [
-            _FakeResponse(200, {"processed": 50, "cached": 40, "reciprocal": 5, "pruned": 1, "errors": 0}),
-            _FakeResponse(200, {"processed": 50, "cached": 30, "reciprocal": 2, "pruned": 0, "errors": 1}),
-            _FakeResponse(200, {"processed": 0, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 0}),
+            _FakeResponse(
+                200,
+                {
+                    "processed": 50,
+                    "cached": 40,
+                    "empty": 0,
+                    "reciprocal": 5,
+                    "pruned": 1,
+                    "errors": 0,
+                },
+            ),
+            _FakeResponse(
+                200,
+                {
+                    "processed": 50,
+                    "cached": 30,
+                    "empty": 0,
+                    "reciprocal": 2,
+                    "pruned": 0,
+                    "errors": 1,
+                },
+            ),
+            _FakeResponse(
+                200,
+                {
+                    "processed": 0,
+                    "cached": 0,
+                    "empty": 0,
+                    "reciprocal": 0,
+                    "pruned": 0,
+                    "errors": 0,
+                },
+            ),
         ]
     )
     result = client.precompute_similar_cache_batches(
         batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0, 0, 0])
     )
-    assert result == {"batches": 3, "processed": 100, "cached": 70, "reciprocal": 7, "pruned": 1, "errors": 1}
+    assert result == {
+        "batches": 3,
+        "processed": 100,
+        "cached": 70,
+        "empty": 0,
+        "reciprocal": 7,
+        "pruned": 1,
+        "errors": 1,
+    }
     assert client.calls == [{"limit": 50}, {"limit": 50}, {"limit": 50}]
 
 
@@ -100,8 +138,26 @@ def test_batches_stops_once_the_time_budget_elapses():
     # NOT drained — only the time budget makes the loop stop.
     client = _ScriptedClient(
         [
-            _FakeResponse(200, {"processed": 50, "cached": 50, "reciprocal": 0, "pruned": 0, "errors": 0}),
-            _FakeResponse(200, {"processed": 50, "cached": 50, "reciprocal": 0, "pruned": 0, "errors": 0}),
+            _FakeResponse(
+                200,
+                {
+                    "processed": 50,
+                    "cached": 50,
+                    "reciprocal": 0,
+                    "pruned": 0,
+                    "errors": 0,
+                },
+            ),
+            _FakeResponse(
+                200,
+                {
+                    "processed": 50,
+                    "cached": 50,
+                    "reciprocal": 0,
+                    "pruned": 0,
+                    "errors": 0,
+                },
+            ),
         ]
     )
     # Clock ticks: 0 (start), 0 (< 10, loop), 5 (< 10, loop), 15 (>= 10, stop).
@@ -118,7 +174,15 @@ def test_batches_stops_immediately_on_transport_failure_without_looping_forever(
     result = client.precompute_similar_cache_batches(
         batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0])
     )
-    assert result == {"batches": 0, "processed": 0, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 0}
+    assert result == {
+        "batches": 0,
+        "processed": 0,
+        "cached": 0,
+        "empty": 0,
+        "reciprocal": 0,
+        "pruned": 0,
+        "errors": 0,
+    }
     assert client.calls == [{"limit": 50}]
 
 
@@ -128,34 +192,138 @@ def test_batches_stops_when_every_question_errors():
     # so the loop must give up instead of spinning for the full time budget.
     client = _ScriptedClient(
         [
-            _FakeResponse(200, {"processed": 50, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 50}),
-            _FakeResponse(200, {"processed": 50, "cached": 50, "reciprocal": 0, "pruned": 0, "errors": 0}),
+            _FakeResponse(
+                200,
+                {
+                    "processed": 50,
+                    "cached": 0,
+                    "empty": 0,
+                    "reciprocal": 0,
+                    "pruned": 0,
+                    "errors": 50,
+                },
+            ),
+            _FakeResponse(
+                200,
+                {
+                    "processed": 50,
+                    "cached": 50,
+                    "empty": 0,
+                    "reciprocal": 0,
+                    "pruned": 0,
+                    "errors": 0,
+                },
+            ),
         ]
     )
     result = client.precompute_similar_cache_batches(
         batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0])
     )
-    assert result == {"batches": 1, "processed": 50, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 50}
+    assert result == {
+        "batches": 1,
+        "processed": 50,
+        "cached": 0,
+        "empty": 0,
+        "reciprocal": 0,
+        "pruned": 0,
+        "errors": 50,
+    }
     assert client.calls == [{"limit": 50}]
 
 
-def test_batches_stops_when_a_batch_caches_nothing_without_erroring():
-    # First batch: every attempted question was processed with NO error, but
-    # none produced a candidate worth caching (e.g. nothing cleared the judge
-    # threshold) — errors < processed, so the errors-based guard alone would
-    # miss this. cached == 0 means the anti-join is unchanged either way, so
-    # the next batch would just re-select the exact same questions forever.
+def test_batches_stops_when_a_batch_makes_no_progress_without_erroring():
+    # First batch: every attempted question was processed with NO error, and
+    # none produced a candidate worth caching NOR a tombstone (e.g. an older
+    # qe-front that doesn't report `empty` yet) — errors < processed, so the
+    # errors-based guard alone would miss this. cached == 0 AND empty == 0
+    # means the anti-join is unchanged either way, so the next batch would
+    # just re-select the exact same questions forever.
     client = _ScriptedClient(
         [
-            _FakeResponse(200, {"processed": 50, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 0}),
-            _FakeResponse(200, {"processed": 50, "cached": 50, "reciprocal": 0, "pruned": 0, "errors": 0}),
+            _FakeResponse(
+                200,
+                {
+                    "processed": 50,
+                    "cached": 0,
+                    "empty": 0,
+                    "reciprocal": 0,
+                    "pruned": 0,
+                    "errors": 0,
+                },
+            ),
+            _FakeResponse(
+                200,
+                {
+                    "processed": 50,
+                    "cached": 50,
+                    "empty": 0,
+                    "reciprocal": 0,
+                    "pruned": 0,
+                    "errors": 0,
+                },
+            ),
         ]
     )
     result = client.precompute_similar_cache_batches(
         batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0])
     )
-    assert result == {"batches": 1, "processed": 50, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 0}
+    assert result == {
+        "batches": 1,
+        "processed": 50,
+        "cached": 0,
+        "empty": 0,
+        "reciprocal": 0,
+        "pruned": 0,
+        "errors": 0,
+    }
     assert client.calls == [{"limit": 50}]
+
+
+def test_batches_keeps_going_when_a_batch_only_tombstones_empty_questions():
+    # First batch: every attempted question was genuinely empty (nothing
+    # to cache) and got tombstoned — cached == 0 but empty == 50, which is
+    # real progress: the anti-join now excludes those 50 questions, so the
+    # next batch selects a DIFFERENT set instead of repeating the same one.
+    # Unlike the cached-only check, this must NOT stop after one batch.
+    client = _ScriptedClient(
+        [
+            _FakeResponse(
+                200,
+                {
+                    "processed": 50,
+                    "cached": 0,
+                    "empty": 50,
+                    "reciprocal": 0,
+                    "pruned": 0,
+                    "errors": 0,
+                },
+            ),
+            _FakeResponse(
+                200,
+                {
+                    "processed": 0,
+                    "cached": 0,
+                    "empty": 0,
+                    "reciprocal": 0,
+                    "pruned": 0,
+                    "errors": 0,
+                },
+            ),
+        ]
+    )
+    result = client.precompute_similar_cache_batches(
+        batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0, 0])
+    )
+    assert result == {
+        "batches": 2,
+        "processed": 50,
+        "cached": 0,
+        "empty": 50,
+        "reciprocal": 0,
+        "pruned": 0,
+        "errors": 0,
+    }
+    assert client.calls == [{"limit": 50}, {"limit": 50}]
 
 
 def test_batches_treats_non_int_counters_as_zero_instead_of_raising():
@@ -164,11 +332,28 @@ def test_batches_treats_non_int_counters_as_zero_instead_of_raising():
     # transport failure.
     client = _ScriptedClient(
         [
-            _FakeResponse(200, {"processed": None, "cached": 3, "reciprocal": 0, "pruned": 0, "errors": 0}),
+            _FakeResponse(
+                200,
+                {
+                    "processed": None,
+                    "cached": 3,
+                    "reciprocal": 0,
+                    "pruned": 0,
+                    "errors": 0,
+                },
+            ),
         ]
     )
     result = client.precompute_similar_cache_batches(
         batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0])
     )
-    assert result == {"batches": 1, "processed": 0, "cached": 3, "reciprocal": 0, "pruned": 0, "errors": 0}
+    assert result == {
+        "batches": 1,
+        "processed": 0,
+        "cached": 3,
+        "empty": 0,
+        "reciprocal": 0,
+        "pruned": 0,
+        "errors": 0,
+    }
     assert client.calls == [{"limit": 50}]
