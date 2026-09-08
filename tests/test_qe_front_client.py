@@ -122,7 +122,7 @@ def test_batches_stops_immediately_on_transport_failure_without_looping_forever(
     assert client.calls == [{"limit": 50}]
 
 
-def test_batches_stops_when_a_batch_makes_no_cached_progress():
+def test_batches_stops_when_every_question_errors():
     # First batch: every attempted question errored out (errors == processed) —
     # the anti-join would just re-select the same failing questions forever,
     # so the loop must give up instead of spinning for the full time budget.
@@ -136,6 +136,25 @@ def test_batches_stops_when_a_batch_makes_no_cached_progress():
         batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0])
     )
     assert result == {"batches": 1, "processed": 50, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 50}
+    assert client.calls == [{"limit": 50}]
+
+
+def test_batches_stops_when_a_batch_caches_nothing_without_erroring():
+    # First batch: every attempted question was processed with NO error, but
+    # none produced a candidate worth caching (e.g. nothing cleared the judge
+    # threshold) — errors < processed, so the errors-based guard alone would
+    # miss this. cached == 0 means the anti-join is unchanged either way, so
+    # the next batch would just re-select the exact same questions forever.
+    client = _ScriptedClient(
+        [
+            _FakeResponse(200, {"processed": 50, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 0}),
+            _FakeResponse(200, {"processed": 50, "cached": 50, "reciprocal": 0, "pruned": 0, "errors": 0}),
+        ]
+    )
+    result = client.precompute_similar_cache_batches(
+        batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0])
+    )
+    assert result == {"batches": 1, "processed": 50, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 0}
     assert client.calls == [{"limit": 50}]
 
 

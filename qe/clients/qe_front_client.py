@@ -73,13 +73,15 @@ class QeFrontClient:
         otherwise. Nothing is lost or double-counted between runs.
 
         Stops when: the backlog is drained (a batch reports `processed ==
-        0`), a batch made no cached progress (every attempted question
-        errored — `errors >= processed` — so the anti-join would just
-        re-select the same failing questions forever), a batch call fails
-        outright (already logged by `precompute_similar_cache` — best-effort,
-        try again next run), or `max_duration_seconds` elapses (a safety
-        bound so one unusually large backlog can't consume the whole
-        ingestion job's time budget).
+        0`), a batch made no cached progress (`cached == 0` — whether every
+        question errored, or every question was attempted but produced
+        nothing to cache, e.g. no candidate cleared the judge threshold — in
+        either case the anti-join is unchanged, so the next batch would just
+        re-select the exact same questions), a batch call fails outright
+        (already logged by `precompute_similar_cache` — best-effort, try
+        again next run), or `max_duration_seconds` elapses (a safety bound so
+        one unusually large backlog can't consume the whole ingestion job's
+        time budget).
         """
         started = _clock()
         totals = {"batches": 0, "processed": 0, "cached": 0, "reciprocal": 0, "pruned": 0, "errors": 0}
@@ -93,9 +95,17 @@ class QeFrontClient:
                 totals[key] += value if isinstance(value, int) else 0
             processed = result.get("processed", 0)
             errors = result.get("errors", 0)
+            cached = result.get("cached", 0)
             if not isinstance(processed, int) or processed == 0:
                 break
             if isinstance(errors, int) and errors >= processed:
+                break
+            if not isinstance(cached, int) or cached == 0:
+                logger.warning(
+                    "qe-front precompute: batch processed %d question(s) but cached none; "
+                    "stopping to avoid re-selecting the same questions every batch.",
+                    processed,
+                )
                 break
         else:
             logger.warning(
