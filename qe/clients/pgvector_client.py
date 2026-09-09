@@ -19,7 +19,8 @@ Scroll/get:    {"id": str, "vector": list[float], "payload": dict}
 
 from __future__ import annotations
 
-from typing import Sequence, cast
+import logging
+from typing import Any, Sequence, cast
 
 import sqlalchemy as sa
 from sqlalchemy import delete, select, text
@@ -32,10 +33,45 @@ from qe.models import (
     QuestionsOpendataVec,
 )
 
+logger = logging.getLogger(__name__)
+
 _COLLECTION_MAP = {
     "questions_opendata": QuestionsOpendataVec,
     "answers_opendata": AnswersOpendataVec,
 }
+
+# pgvector reserves the `hnsw` GUC prefix, so `SET LOCAL hnsw.iterative_scan`
+# raises "unrecognized configuration parameter" (aborting the transaction)
+# on an extension older than 0.8, where the GUC doesn't exist yet. Some
+# environments (e.g. Atlas Sandbox before migration 087d1c73ddbc lands)
+# are still on 0.6.0 -- probe once and cache, rather than catching the
+# error, since a failed statement can't be recovered from within the same
+# transaction without a savepoint.
+_ITERATIVE_SCAN_MIN_VERSION = (0, 8)
+_supports_iterative_scan: bool | None = None
+
+
+def _pgvector_supports_iterative_scan(session: Any) -> bool:
+    """`session` only needs `.execute(...).scalar()` — typed loosely (not
+    `Session`) so a lightweight fake can stand in for tests without a
+    database, since SQLAlchemy's real `Session.execute` overloads don't
+    structurally match a narrower Protocol."""
+    global _supports_iterative_scan
+    if _supports_iterative_scan is None:
+        version = session.execute(
+            text("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+        ).scalar()
+        parts = tuple(int(p) for p in (version or "0.0").split(".")[:2])
+        _supports_iterative_scan = parts >= _ITERATIVE_SCAN_MIN_VERSION
+        if not _supports_iterative_scan:
+            logger.warning(
+                "pgvector extension %s does not support hnsw.iterative_scan "
+                "(needs >= %s) -- search() falls back to the ef_search-capped "
+                "legacy behaviour (see migration 087d1c73ddbc).",
+                version,
+                ".".join(str(p) for p in _ITERATIVE_SCAN_MIN_VERSION),
+            )
+    return _supports_iterative_scan
 
 
 def _resolve(name: str):
@@ -300,10 +336,11 @@ class PgvectorClient:
             # default) unless iterative scanning is on, so a LIMIT above it
             # silently returns fewer rows. strict_order keeps exact distance
             # order while the walker continues until top_k rows are found.
-            session.execute(text("SET LOCAL hnsw.iterative_scan = 'strict_order'"))
-            session.execute(
-                text(f"SET LOCAL hnsw.ef_search = {min(1000, max(40, int(top_k)))}")
-            )
+            if _pgvector_supports_iterative_scan(session):
+                session.execute(text("SET LOCAL hnsw.iterative_scan = 'strict_order'"))
+                session.execute(
+                    text(f"SET LOCAL hnsw.ef_search = {min(1000, max(40, int(top_k)))}")
+                )
             rows = session.execute(stmt).all()
 
         return [
