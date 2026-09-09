@@ -5,7 +5,9 @@ raises "unrecognized configuration parameter" (aborting the transaction) on
 an extension older than 0.8 -- some environments are still on 0.6.0 (see
 migration 087d1c73ddbc). `_pgvector_supports_iterative_scan` probes the
 installed extension version once and caches it, so `search()` never issues
-that SET LOCAL against a version that doesn't support it.
+that SET LOCAL against a version that doesn't support it. `hnsw.ef_search`
+ships with HNSW itself (0.5.0) and is the actual row cap, so it is NOT
+behind that guard -- it must run on every version, pre-0.8 included.
 """
 
 from __future__ import annotations
@@ -107,13 +109,19 @@ def _fake_get_session(session):
     yield session
 
 
-def test_search_skips_set_local_on_pre_0_8_extension(monkeypatch):
+def test_search_raises_ef_search_but_not_iterative_scan_on_pre_0_8_extension(
+    monkeypatch,
+):
+    # ef_search ships with HNSW itself (0.5.0) and is the actual row cap,
+    # so it must still be raised on a pre-0.8 extension -- only
+    # iterative_scan (0.8+ only) is version-gated.
     session = _FakeSession("0.6.0")
     monkeypatch.setattr(
         pgvector_client.db, "get_session", lambda: _fake_get_session(session)
     )
     pgvector_client.PgvectorClient().search("questions_opendata", [0.1, 0.2], top_k=10)
-    assert not any("SET LOCAL" in sql for sql in session.executed)
+    assert any("hnsw.ef_search" in sql for sql in session.executed)
+    assert not any("hnsw.iterative_scan" in sql for sql in session.executed)
 
 
 def test_search_sets_ef_search_and_iterative_scan_on_supported_extension(monkeypatch):
