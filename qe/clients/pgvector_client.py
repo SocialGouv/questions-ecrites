@@ -346,15 +346,18 @@ class PgvectorClient:
                 stmt = stmt.where(where)
 
         with db.get_session() as session:
-            # pgvector >= 0.8 caps an HNSW scan at hnsw.ef_search rows (40 by
-            # default) unless iterative scanning is on, so a LIMIT above it
-            # silently returns fewer rows. strict_order keeps exact distance
-            # order while the walker continues until top_k rows are found.
+            # pgvector caps an HNSW scan at hnsw.ef_search rows (40 by
+            # default) regardless of version, so a LIMIT above it silently
+            # returns fewer rows -- raise it unconditionally, it's shipped
+            # with HNSW itself since 0.5.0. strict_order additionally keeps
+            # exact distance order while the walker continues past
+            # ef_search until top_k rows are found, but that GUC only
+            # exists from 0.8 onward, so it stays behind the version probe.
             if _pgvector_supports_iterative_scan(session):
                 session.execute(text("SET LOCAL hnsw.iterative_scan = 'strict_order'"))
-                session.execute(
-                    text(f"SET LOCAL hnsw.ef_search = {min(1000, max(40, int(top_k)))}")
-                )
+            session.execute(
+                text(f"SET LOCAL hnsw.ef_search = {min(1000, max(40, int(top_k)))}")
+            )
             rows = session.execute(stmt).all()
 
         return [
