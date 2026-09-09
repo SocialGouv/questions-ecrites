@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from typing import Sequence
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 class RerankClient:
@@ -23,6 +27,12 @@ class RerankClient:
     # a single-call ranking.
     BATCH_SIZE = int(os.environ.get("ALBERT_RERANK_BATCH_SIZE", "64"))
 
+    # Wall-clock budget across ALL batches of one rerank() call. Each batch
+    # already has its own socket timeout, but a large candidate pool (e.g.
+    # the eval's 2 000-document pool -> 32 batches) would otherwise have no
+    # bound on total latency.
+    TOTAL_TIMEOUT = float(os.environ.get("ALBERT_RERANK_TOTAL_TIMEOUT", "60"))
+
     def rerank(
         self,
         query: str,
@@ -33,16 +43,39 @@ class RerankClient:
             return []
         docs = list(documents)
         merged: list[dict] = []
+        deadline = time.monotonic() + self.TOTAL_TIMEOUT
         for start in range(0, len(docs), self.BATCH_SIZE):
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Rerank overall deadline (%.0fs) reached after %d/%d document(s); "
+                    "returning the ranking from completed batches only.",
+                    self.TOTAL_TIMEOUT,
+                    start,
+                    len(docs),
+                )
+                break
             batch = docs[start : start + self.BATCH_SIZE]
-            for item in self._rerank_batch(query, batch, top_n=len(batch)):
-                merged.append({**item, "index": start + int(item["index"])})
+            try:
+                batch_results = self._rerank_batch(query, batch, top_n=len(batch))
+            except requests.RequestException:
+                logger.warning(
+                    "Rerank batch [%d:%d] failed; keeping %d already-scored "
+                    "document(s) from other batches.",
+                    start,
+                    start + len(batch),
+                    len(merged),
+                    exc_info=True,
+                )
+                continue
+            for item in batch_results:
+                idx = item.get("index")
+                if idx is None:
+                    continue
+                merged.append({**item, "index": start + int(idx)})
         merged.sort(key=_score, reverse=True)
         return merged[:top_n]
 
-    def _rerank_batch(
-        self, query: str, documents: list[str], top_n: int
-    ) -> list[dict]:
+    def _rerank_batch(self, query: str, documents: list[str], top_n: int) -> list[dict]:
         payload = {
             "model": self.model,
             "query": query,
@@ -64,4 +97,7 @@ class RerankClient:
 
 
 def _score(item: dict) -> float:
-    return float(item.get("relevance_score", item.get("score", 0.0)))
+    score = item.get("relevance_score")
+    if score is None:
+        score = item.get("score")
+    return float(score) if score is not None else 0.0
