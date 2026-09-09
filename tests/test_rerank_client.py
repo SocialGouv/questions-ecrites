@@ -12,9 +12,10 @@ so `rerank()` itself must not crash on them first.
 
 from __future__ import annotations
 
+import pytest
 import requests
 
-from qe.clients.rerank import RerankClient
+from qe.clients.rerank import RerankClient, _positive_float_env, _positive_int_env
 
 
 class _ScriptedClient(RerankClient):
@@ -26,9 +27,11 @@ class _ScriptedClient(RerankClient):
         super().__init__(base_url="http://test", model="m", api_key="k")
         self._script = list(script)
         self.calls: list[list[str]] = []
+        self.timeouts: list[float] = []
 
-    def _rerank_batch(self, query, documents, top_n):
+    def _rerank_batch(self, query, documents, top_n, timeout=60.0):
         self.calls.append(list(documents))
+        self.timeouts.append(timeout)
         action = self._script.pop(0)
         if isinstance(action, Exception):
             raise action
@@ -111,3 +114,53 @@ def test_overall_deadline_stops_remaining_batches(monkeypatch):
     result = client.rerank("q", list("abcd"), top_n=4)
     assert client.calls == [["a", "b"]]
     assert [r["index"] for r in result] == [0]
+
+
+def test_all_batches_failing_reraises_instead_of_returning_empty():
+    # Callers (eval_realistic_encours.py's cosine-order fallback,
+    # api/questions.py's 5xx) are built around rerank() raising when it
+    # cannot produce a ranking at all -- a silent [] would look like "no
+    # relevant candidates" instead of "the reranker is unreachable".
+    client = _ScriptedClient(
+        [requests.ConnectionError("boom"), requests.ConnectionError("boom again")]
+    )
+    with pytest.raises(requests.ConnectionError):
+        client.rerank("q", ["a", "b", "c"], top_n=3)
+
+
+def test_partial_failure_does_not_raise_even_though_some_batches_failed():
+    client = _ScriptedClient(
+        [[_item(0, relevance_score=0.9)], requests.ConnectionError("boom")]
+    )
+    result = client.rerank("q", ["a", "b", "c"], top_n=3)
+    assert [r["index"] for r in result] == [0]
+
+
+def test_per_batch_timeout_is_capped_by_remaining_budget(monkeypatch):
+    # deadline computed once, then one remaining-budget check per batch
+    ticks = iter([0.0, 0.0, 45.0])
+    monkeypatch.setattr("qe.clients.rerank.time.monotonic", lambda: next(ticks))
+    client = _ScriptedClient(
+        [[_item(0, relevance_score=0.9)], [_item(0, relevance_score=0.5)]]
+    )
+    client.TOTAL_TIMEOUT = 50.0
+    client.rerank("q", ["a", "b", "c", "d"], top_n=4)
+    # First batch: full 50s budget remaining, capped at the 60s socket ceiling -> 50.
+    # Second batch: only 5s left (50 - 45) -> capped at 5, not the 60s ceiling.
+    assert client.timeouts == [50.0, 5.0]
+
+
+def test_batch_size_env_var_clamped_to_at_least_one(monkeypatch):
+    monkeypatch.setenv("X_TEST_BATCH_SIZE", "-1")
+    assert _positive_int_env("X_TEST_BATCH_SIZE", 64) == 1
+    monkeypatch.setenv("X_TEST_BATCH_SIZE", "0")
+    assert _positive_int_env("X_TEST_BATCH_SIZE", 64) == 1
+    monkeypatch.setenv("X_TEST_BATCH_SIZE", "8")
+    assert _positive_int_env("X_TEST_BATCH_SIZE", 64) == 8
+
+
+def test_total_timeout_env_var_clamped_to_positive(monkeypatch):
+    monkeypatch.setenv("X_TEST_TIMEOUT", "-5")
+    assert _positive_float_env("X_TEST_TIMEOUT", 300.0) > 0
+    monkeypatch.setenv("X_TEST_TIMEOUT", "0")
+    assert _positive_float_env("X_TEST_TIMEOUT", 300.0) > 0
