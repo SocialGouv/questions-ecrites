@@ -49,8 +49,10 @@ class _FakeSession:
 @pytest.fixture(autouse=True)
 def _reset_cache():
     pgvector_client._supports_iterative_scan = None
+    pgvector_client._supports_iterative_scan_probed_at = float("-inf")
     yield
     pgvector_client._supports_iterative_scan = None
+    pgvector_client._supports_iterative_scan_probed_at = float("-inf")
 
 
 def test_supports_iterative_scan_on_0_8_2():
@@ -75,6 +77,29 @@ def test_result_is_cached_after_first_probe():
     session2 = _FakeSession("0.8.2")
     assert pgvector_client._pgvector_supports_iterative_scan(session2) is False
     assert len(session2.executed) == 0
+
+
+def test_reprobes_after_ttl_expires_so_a_running_process_notices_an_upgrade(
+    monkeypatch,
+):
+    ticks = iter(
+        [0.0, 0.0, 1_000_000.0]
+    )  # first probe, cache-hit check, TTL-expired check
+    monkeypatch.setattr(pgvector_client.time, "monotonic", lambda: next(ticks))
+    stale = _FakeSession("0.6.0")
+    assert pgvector_client._pgvector_supports_iterative_scan(stale) is False
+
+    upgraded = _FakeSession("0.8.2")
+    assert (
+        pgvector_client._pgvector_supports_iterative_scan(upgraded) is False
+    )  # cache-hit, no re-query
+    assert len(upgraded.executed) == 0
+
+    upgraded_again = _FakeSession("0.8.2")
+    assert (
+        pgvector_client._pgvector_supports_iterative_scan(upgraded_again) is True
+    )  # TTL expired, re-queries
+    assert len(upgraded_again.executed) == 1
 
 
 @contextmanager

@@ -20,6 +20,8 @@ Scroll/get:    {"id": str, "vector": list[float], "payload": dict}
 from __future__ import annotations
 
 import logging
+import os
+import time
 from typing import Any, Sequence, cast
 
 import sqlalchemy as sa
@@ -44,11 +46,18 @@ _COLLECTION_MAP = {
 # raises "unrecognized configuration parameter" (aborting the transaction)
 # on an extension older than 0.8, where the GUC doesn't exist yet. Some
 # environments (e.g. Atlas Sandbox before migration 087d1c73ddbc lands)
-# are still on 0.6.0 -- probe once and cache, rather than catching the
-# error, since a failed statement can't be recovered from within the same
-# transaction without a savepoint.
+# are still on 0.6.0 -- probe rather than catching the error, since a
+# failed statement can't be recovered from within the same transaction
+# without a savepoint. Cached with a TTL (not for the process lifetime):
+# a long-running server started before an extension upgrade migration
+# lands would otherwise cache the pre-upgrade answer forever and never
+# pick up the fix without a restart.
 _ITERATIVE_SCAN_MIN_VERSION = (0, 8)
+_ITERATIVE_SCAN_PROBE_TTL_SECONDS = float(
+    os.environ.get("PGVECTOR_VERSION_PROBE_TTL_SECONDS", "300")
+)
 _supports_iterative_scan: bool | None = None
+_supports_iterative_scan_probed_at: float = float("-inf")
 
 
 def _pgvector_supports_iterative_scan(session: Any) -> bool:
@@ -56,13 +65,18 @@ def _pgvector_supports_iterative_scan(session: Any) -> bool:
     `Session`) so a lightweight fake can stand in for tests without a
     database, since SQLAlchemy's real `Session.execute` overloads don't
     structurally match a narrower Protocol."""
-    global _supports_iterative_scan
-    if _supports_iterative_scan is None:
+    global _supports_iterative_scan, _supports_iterative_scan_probed_at
+    now = time.monotonic()
+    stale = (
+        now - _supports_iterative_scan_probed_at
+    ) >= _ITERATIVE_SCAN_PROBE_TTL_SECONDS
+    if _supports_iterative_scan is None or stale:
         version = session.execute(
             text("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
         ).scalar()
         parts = tuple(int(p) for p in (version or "0.0").split(".")[:2])
         _supports_iterative_scan = parts >= _ITERATIVE_SCAN_MIN_VERSION
+        _supports_iterative_scan_probed_at = now
         if not _supports_iterative_scan:
             logger.warning(
                 "pgvector extension %s does not support hnsw.iterative_scan "
