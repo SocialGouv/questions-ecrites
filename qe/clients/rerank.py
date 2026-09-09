@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Sequence
 
 import requests
@@ -15,11 +16,12 @@ class RerankClient:
         self.model = model
         self.api_key = api_key
 
-    # Albert answers 413 above roughly a hundred full question texts per
-    # call. Documents are scored in batches of this size and merged; each
-    # document's score is independent of the others in its batch, so the
-    # merged ranking equals a single-call ranking.
-    BATCH_SIZE = 100
+    # Albert caps the number of documents per call, not the payload size:
+    # 100 texts of 500 chars are refused (413), 50 texts of 4 000 chars are
+    # accepted. Same limit and same knob as qe-front's rerank client.
+    # Scores are independent across batches, so the merged ranking equals
+    # a single-call ranking.
+    BATCH_SIZE = int(os.environ.get("ALBERT_RERANK_BATCH_SIZE", "64"))
 
     def rerank(
         self,
