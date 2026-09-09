@@ -239,7 +239,7 @@ def main() -> None:
         default=None,
         help="Path to dgcs_groups.csv — same time-anchor + rerank pipeline, "
              "but ground truth = hash+date allotments RESTRICTED to QE that "
-             "appear in the DGCS CSV. Fiable GT (LLM-validated at 98 %) on "
+             "appear in the DGCS CSV. Fiable GT (LLM-validated at 98 %%) on "
              "the perimeter that matters for the eval.",
     )
     parser.add_argument(
