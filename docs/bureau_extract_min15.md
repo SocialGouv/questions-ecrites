@@ -299,3 +299,29 @@ Voir aussi :
   bureau, mais mêmes principes de sources multiples)
 - [scripts/extract_bureau_from_min15.py](../scripts/extract_bureau_from_min15.py) — implémentation
 - [alembic/versions/c1d2e3f4a5b6_add_question_bureau_extract.py](../alembic/versions/c1d2e3f4a5b6_add_question_bureau_extract.py) — schéma
+
+## Clé bureau MIN15 : lecture corrigée (septembre 2026)
+
+La clé construite par `question_attributions_all` pour les lignes MIN15 ajoutait toujours le 3ᵉ segment du poste. Or ce segment ne désigne le bureau que pour la DGCS et la DGS ; pour la DSS et la DGOS, le bureau est dans le 2ᵉ segment et le 3ᵉ est le rôle de l'agent.
+
+| Poste MIN15 | Ancienne clé | Clé corrigée (migration `5b1c9e2d7a4f`) |
+|---|---|---|
+| `DGCS - SD2 - Bureau 2B` | `SD2/2B` | `SD2/2B` |
+| `DSS - SD1 B - REDACTEURS` | `SD1B/REDACTEURS` | `SD1B` |
+| `DSS - SD1 - MCGRM - REDACTEURS` | `SD1/MCGRM` | `MCGRM` |
+| `DSS - DACI - REDACTEURS` | `DACI/REDACTEURS` | `DACI` |
+| `DGOS - SDRH1 - Chef de bureau` | `SDRH1/CHEF` | `SDRH1` |
+| `DGOS - SDAS - Sous-Direction` | `SDAS/SOUS` | aucune ligne (pas un bureau) |
+| `DGE - Centralisateur - MDI` | `CENTRALISATEUR/MDI` | inchangée |
+
+**Preuve.** Sur les 688 QE DSS qui ont à la fois un bureau humain et un extrait MIN15, les deux sources concordent dans 0,0 % des cas avec l'ancienne clé et dans 98,3 % des cas avec la clé au niveau du bureau (DGCS : 98,2 % dans les deux cas).
+
+**Mesure.** Leave-one-out du vote bureau de production (K = 25, somme des similarités), DGCS/DSS/DGOS, top-1 / top-3. La colonne « avec filtre » limite les suggestions à la direction de la question, comme le filtre de l'écran bureau.
+
+| Direction | Ancienne clé | Clé corrigée | Ancienne clé, avec filtre | Clé corrigée, avec filtre |
+|---|---:|---:|---:|---:|
+| DGCS | 88,1 / 97,7 | 87,9 / 97,7 | 88,5 / 98,0 | 88,5 / 98,0 |
+| DSS | 50,8 / 78,6 | 64,8 / 84,7 | 61,5 / 85,8 | 77,6 / 90,8 |
+| DGOS | 28,7 / 56,4 | 50,6 / 79,6 | 41,4 / 68,4 | 70,7 / 89,6 |
+
+Le jeu de test DGOS passe de 1 070 à 885 QE : les étiquettes qui ne désignent qu'une sous-direction ne sont plus des bureaux. Les chiffres de l'éval A/B plus haut ont été produits avec l'ancienne clé ; `canonical_from_extract` suit désormais la même règle que la vue.

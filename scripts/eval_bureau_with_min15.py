@@ -56,31 +56,43 @@ def canonical_from_dgcs_nom(nom: str) -> str | None:
     return f"{m.group(1).upper()}/{m.group(2).upper()}"
 
 
-def canonical_from_extract(sous_direction: str | None, bureau: str | None) -> str | None:
-    """Return canonical key from question_bureau_extract fields.
+_BUREAU_CODE_RE = re.compile(r"^\s*Bureau\s+(\w+)", re.IGNORECASE)
+# First word of the step's bureau segment that names a role or a level, not a unit.
+_ROLE_TOKENS = {
+    "REDACTEURS", "VALIDEURS", "CHEF", "CHEFFE", "CM", "CHARGÉ", "CHARGÉS", "CHARGEE",
+    "CHARGEES", "COORDINATION", "MISSION", "CABINET", "DIRECTION", "SOUS", "MAJ", "GOUV", "CAB",
+}
 
-    Formats seen in the wild:
-    - MIN15 DGCS  : sous_direction='SD2', bureau='Bureau 2B'  → 'SD2/2B'
-    - MIN15 DGOS  : sous_direction='SDRH1', bureau='Pharmacie' → 'SDRH1/Pharmacie'
-    - MIN15 DGS   : sous_direction='SD SP', bureau='Bureau SP5 - Maladies…' → 'SDSP/SP5'
+
+def canonical_from_extract(sous_direction: str | None, bureau: str | None) -> str | None:
+    """Return the bureau-level key of a question_bureau_extract row, or None.
+
+    Mirrors the MIN15 key of the question_attributions_all view (migration
+    5b1c9e2d7a4f):
+    - "SD2 - Bureau 2B"          -> 'SD2/2B'
+    - "SD1 B - REDACTEURS"       -> 'SD1B'
+    - "SDRH1 - Chef de bureau"   -> 'SDRH1'
+    - "SD1 - MCGRM - REDACTEURS" -> 'MCGRM'
+    - "DACI - REDACTEURS"        -> 'DACI'
+    - "SDAS - Sous-Direction"    -> None (sous-direction, not a bureau)
     """
-    if not sous_direction:
+    if not sous_direction or not sous_direction.strip():
         return None
     sd = sous_direction.strip().upper().replace(" ", "")
-    if not bureau:
+    b = (bureau or "").strip()
+    m = _BUREAU_CODE_RE.match(b)
+    if m:
+        return f"{sd}/{m.group(1).upper()}"
+    token = re.split(r"[\s/,-]+", b)[0] if b else ""
+    if re.fullmatch(r"SD\d+[A-Z]|SD[A-Z]+\d+", sd):
         return sd
-    b = bureau.strip()
-    # Try to extract "2B" from "Bureau 2B"
-    m = re.match(r"^\s*Bureau\s+(\w+)", b, re.IGNORECASE)
-    if m:
-        return f"{sd}/{m.group(1).upper()}"
-    # Try "SP5" from "Bureau SP5" or full name
-    m = re.match(r"^\s*Bureau\s+([A-Z]+\d+)", b, re.IGNORECASE)
-    if m:
-        return f"{sd}/{m.group(1).upper()}"
-    # Otherwise use the first token normalised
-    first = re.split(r"[\s/,-]+", b)[0].strip().upper()
-    return f"{sd}/{first}" if first else sd
+    if re.fullmatch(r"SD(\d+|[A-Z]+)", sd):
+        return token if re.fullmatch(r"[A-Z]{2,}", token) and token not in _ROLE_TOKENS else None
+    if sd == "CAB":
+        return None
+    if token.upper() in _ROLE_TOKENS:
+        return sd
+    return f"{sd}/{token.upper()}" if token else sd
 
 
 def _point_id(qid: str) -> str:
