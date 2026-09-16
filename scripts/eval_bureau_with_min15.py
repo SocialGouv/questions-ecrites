@@ -59,8 +59,8 @@ def canonical_from_dgcs_nom(nom: str) -> str | None:
 _BUREAU_CODE_RE = re.compile(r"^\s*Bureau\s+(\w+)", re.IGNORECASE)
 # First word of the step's bureau segment that names a role or a level, not a unit.
 _ROLE_TOKENS = {
-    "REDACTEURS", "VALIDEURS", "CHEF", "CHEFFE", "CM", "CHARGÉ", "CHARGÉS", "CHARGEE",
-    "CHARGEES", "COORDINATION", "MISSION", "CABINET", "DIRECTION", "SOUS", "MAJ", "GOUV", "CAB",
+    "REDACTEURS", "VALIDEURS", "CHEF", "CHEFFE", "CM", "CHARGÉ", "CHARGÉS", "CHARGÉE",
+    "CHARGÉES", "CHARGEE", "CHARGEES", "COORDINATION", "MISSION", "CABINET", "DIRECTION", "SOUS", "MAJ", "GOUV", "CAB",
 }
 
 

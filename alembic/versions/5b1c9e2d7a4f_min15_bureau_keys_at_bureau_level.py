@@ -36,7 +36,7 @@ depends_on: Union[str, Sequence[str], None] = None
 # First word of segment 3 that names a role or a level rather than a unit.
 ROLE_TOKENS = (
     "('REDACTEURS', 'VALIDEURS', 'CHEF', 'CHEFFE', 'CM', 'CHARGÉ', 'CHARGÉS', "
-    "'CHARGEE', 'CHARGEES', 'COORDINATION', 'MISSION', 'CABINET', 'DIRECTION', "
+    "'CHARGÉE', 'CHARGÉES', 'CHARGEE', 'CHARGEES', 'COORDINATION', 'MISSION', 'CABINET', 'DIRECTION', "
     "'SOUS', 'MAJ', 'GOUV', 'CAB')"
 )
 SOUS_DIRECTION = "UPPER(REPLACE(BTRIM(e.sous_direction), ' ', ''))"
@@ -152,9 +152,10 @@ WITH keys AS (
 mapping AS (
     SELECT previous_key, MIN(bureau_key) AS bureau_key
     FROM keys
-    WHERE bureau_key IS NOT NULL AND bureau_key <> previous_key
+    WHERE bureau_key IS NOT NULL
     GROUP BY previous_key
     HAVING COUNT(DISTINCT bureau_key) = 1
+       AND MIN(bureau_key) <> previous_key
 )
 UPDATE suggestion_feedback f
 SET suggestion_target = m.bureau_key
