@@ -12,9 +12,15 @@ as roles, none matching the referential's code (SD1B), so bureau votes split.
     "SDRH1 - Chef de bureau"    -> SDRH1
     "SD1 - MCGRM - REDACTEURS"  -> MCGRM
     "DACI - REDACTEURS"         -> DACI
+    "SD SP - Pharmacie"         -> SDSP/PHARMACIE (unchanged)
     "SDAS - Sous-Direction"     -> no row: names a sous-direction, not a bureau
     "CAB - Cabinet"             -> no row
     anything else               -> unchanged ("Centralisateur - MDI")
+
+Only the role and level labels listed in ROLE_TOKENS lose their row: a bureau
+named in free text under a plain sous-direction (the DGS and DGE shape, which
+the measurement does not cover) keeps its previous "<sous-direction>/<bureau>"
+key rather than leaving the vote.
 
 Rows without a bureau-level key are dropped before picking each question's
 latest step. Bureau suggestion feedback recorded against a MIN15 key moves to
@@ -57,8 +63,10 @@ BUREAU_KEY_SQL = rf"""
       WHEN {SOUS_DIRECTION} ~ '^SD[0-9]+[A-Z]$' OR {SOUS_DIRECTION} ~ '^SD[A-Z]+[0-9]+$'
         THEN {SOUS_DIRECTION}
       WHEN {SOUS_DIRECTION} ~ '^SD([0-9]+|[A-Z]+)$' THEN
-        CASE WHEN {FIRST_WORD} ~ '^[A-Z]{{2,}}$' AND {FIRST_WORD} NOT IN {ROLE_TOKENS}
-             THEN {FIRST_WORD} END
+        CASE WHEN COALESCE({FIRST_WORD}, '') = '' THEN NULL
+             WHEN UPPER({FIRST_WORD}) IN {ROLE_TOKENS} THEN NULL
+             WHEN {FIRST_WORD} ~ '^[A-Z]{{2,}}$' THEN {FIRST_WORD}
+             ELSE {SOUS_DIRECTION} || '/' || UPPER({FIRST_WORD}) END
       WHEN {SOUS_DIRECTION} = 'CAB' THEN NULL
       WHEN UPPER({FIRST_WORD}) IN {ROLE_TOKENS} THEN {SOUS_DIRECTION}
       ELSE {SOUS_DIRECTION} || COALESCE('/' || NULLIF(UPPER({FIRST_WORD}), ''), '')

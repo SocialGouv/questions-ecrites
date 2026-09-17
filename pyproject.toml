@@ -56,6 +56,9 @@ include_namespace_packages = true
 testpaths = ["tests"]
 norecursedirs = ["dist", "build", "dev", "typings"]
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: needs a live service (PostgreSQL…); skipped when unreachable",
+]
 addopts = [
     "-n 4",
     "--cov=qe",
