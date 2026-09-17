@@ -74,6 +74,7 @@ def canonical_from_extract(sous_direction: str | None, bureau: str | None) -> st
     - "SDRH1 - Chef de bureau"   -> 'SDRH1'
     - "SD1 - MCGRM - REDACTEURS" -> 'MCGRM'
     - "DACI - REDACTEURS"        -> 'DACI'
+    - "SD SP - Pharmacie"        -> 'SDSP/PHARMACIE' (bureau named in free text)
     - "SDAS - Sous-Direction"    -> None (sous-direction, not a bureau)
     """
     if not sous_direction or not sous_direction.strip():
@@ -87,7 +88,12 @@ def canonical_from_extract(sous_direction: str | None, bureau: str | None) -> st
     if re.fullmatch(r"SD\d+[A-Z]|SD[A-Z]+\d+", sd):
         return sd
     if re.fullmatch(r"SD(\d+|[A-Z]+)", sd):
-        return token if re.fullmatch(r"[A-Z]{2,}", token) and token not in _ROLE_TOKENS else None
+        # Plain sous-direction: the bureau segment carries the whole key. Only a
+        # role or level label means "no bureau here"; a free-text bureau name
+        # (DGS, DGE) keeps its 'SD/NAME' key instead of leaving the vote.
+        if not token or token.upper() in _ROLE_TOKENS:
+            return None
+        return token if re.fullmatch(r"[A-Z]{2,}", token) else f"{sd}/{token.upper()}"
     if sd == "CAB":
         return None
     if token.upper() in _ROLE_TOKENS:

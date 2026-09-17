@@ -312,7 +312,10 @@ La clé construite par `question_attributions_all` pour les lignes MIN15 ajoutai
 | `DSS - DACI - REDACTEURS` | `DACI/REDACTEURS` | `DACI` |
 | `DGOS - SDRH1 - Chef de bureau` | `SDRH1/CHEF` | `SDRH1` |
 | `DGOS - SDAS - Sous-Direction` | `SDAS/SOUS` | aucune ligne (pas un bureau) |
+| `DGS - SD SP - Pharmacie` | `SDSP/PHARMACIE` | inchangée |
 | `DGE - Centralisateur - MDI` | `CENTRALISATEUR/MDI` | inchangée |
+
+Seules les étiquettes de rôle ou de niveau (`ROLE_TOKENS` : rédacteurs, chef, sous-direction, cabinet…) font sortir la ligne de la vue. Un bureau nommé en texte libre sous une sous-direction simple — la forme DGS et DGE, que la mesure ci-dessous ne couvre pas — garde sa clé `<sous-direction>/<bureau>` et continue de voter.
 
 **Preuve.** Sur les 688 QE DSS qui ont à la fois un bureau humain et un extrait MIN15, les deux sources concordent dans 0,0 % des cas avec l'ancienne clé et dans 98,3 % des cas avec la clé au niveau du bureau (DGCS : 98,2 % dans les deux cas).
 
@@ -324,4 +327,4 @@ La clé construite par `question_attributions_all` pour les lignes MIN15 ajoutai
 | DSS | 50,8 / 78,6 | 64,8 / 84,7 | 61,5 / 85,8 | 77,6 / 90,8 |
 | DGOS | 28,7 / 56,4 | 50,6 / 79,6 | 41,4 / 68,4 | 70,7 / 89,6 |
 
-Le jeu de test DGOS passe de 1 070 à 885 QE : les étiquettes qui ne désignent qu'une sous-direction ne sont plus des bureaux. Les chiffres de l'éval A/B plus haut ont été produits avec l'ancienne clé ; `canonical_from_extract` suit désormais la même règle que la vue.
+Le jeu de test DGOS passe de 1 070 à 885 QE : les étiquettes qui ne désignent qu'une sous-direction ne sont plus des bureaux. Les chiffres de l'éval A/B plus haut ont été produits avec l'ancienne clé ; `canonical_from_extract` suit désormais la même règle que la vue, et `tests/test_eval_bureau_min15_keys.py` rejoue les mêmes cas dans PostgreSQL contre le `CASE` de la migration pour que les deux écritures de la règle ne divergent pas.
