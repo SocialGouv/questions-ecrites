@@ -25,6 +25,7 @@ import json
 import logging
 import re
 from collections import defaultdict
+from collections.abc import Collection
 from pathlib import Path
 from uuid import UUID
 
@@ -57,6 +58,8 @@ def canonical_from_dgcs_nom(nom: str) -> str | None:
 
 
 _BUREAU_CODE_RE = re.compile(r"^\s*Bureau\s+(\w+)", re.IGNORECASE)
+# Bureau code of a referential row: '[SD1B] Relations…' -> 'SD1B'.
+_REFERENTIAL_KEY_RE = re.compile(r"^\s*\[([^\]]+)\]")
 # First word of the step's bureau segment that names a role or a level, not a unit.
 _ROLE_TOKENS = {
     "REDACTEURS", "VALIDEURS", "CHEF", "CHEFFE", "CM", "CHARGÉ", "CHARGÉS", "CHARGÉE",
@@ -64,7 +67,18 @@ _ROLE_TOKENS = {
 }
 
 
-def canonical_from_extract(sous_direction: str | None, bureau: str | None) -> str | None:
+def load_referential_codes(session) -> frozenset[str]:
+    """Bureau codes of the referential: '[SD1B] Relations…' -> 'SD1B'."""
+    rows = session.execute(sqltext("SELECT nom FROM bureaux")).all()
+    codes = (_REFERENTIAL_KEY_RE.match(r.nom or "") for r in rows)
+    return frozenset(m.group(1).upper().replace(" ", "") for m in codes if m)
+
+
+def canonical_from_extract(
+    sous_direction: str | None,
+    bureau: str | None,
+    referential_codes: Collection[str] = frozenset(),
+) -> str | None:
     """Return the bureau-level key of a question_bureau_extract row, or None.
 
     Mirrors the MIN15 key of the question_attributions_all view (migration
@@ -76,6 +90,11 @@ def canonical_from_extract(sous_direction: str | None, bureau: str | None) -> st
     - "DACI - REDACTEURS"        -> 'DACI'
     - "SD SP - Pharmacie"        -> 'SDSP/PHARMACIE' (bureau named in free text)
     - "SDAS - Sous-Direction"    -> None (sous-direction, not a bureau)
+
+    `referential_codes` — the `bureaux` codes, via `load_referential_codes` —
+    tells a referential code ('MCGRM') from a free-text bureau name
+    ('Pharmacie') under a plain sous-direction. Left empty, every such segment
+    reads as free text.
     """
     if not sous_direction or not sous_direction.strip():
         return None
@@ -93,7 +112,8 @@ def canonical_from_extract(sous_direction: str | None, bureau: str | None) -> st
         # (DGS, DGE) keeps its 'SD/NAME' key instead of leaving the vote.
         if not token or token.upper() in _ROLE_TOKENS:
             return None
-        return token if re.fullmatch(r"[A-Z]{2,}", token) else f"{sd}/{token.upper()}"
+        code = token.upper()
+        return code if code in referential_codes else f"{sd}/{code}"
     if sd == "CAB":
         return None
     if token.upper() in _ROLE_TOKENS:
@@ -215,8 +235,9 @@ def make_voters_table(session, table: str, enriched: bool) -> None:
         rows_min15 = session.execute(sqltext("""
             SELECT question_id, sous_direction, bureau FROM question_bureau_extract
         """)).all()
+        referential_codes = load_referential_codes(session)
         for r in rows_min15:
-            k = canonical_from_extract(r.sous_direction, r.bureau)
+            k = canonical_from_extract(r.sous_direction, r.bureau, referential_codes)
             if k and r.question_id not in kv:  # ne pas écraser DGCS existant
                 kv[r.question_id] = k
 
@@ -250,11 +271,12 @@ def main() -> None:
               FROM question_bureau_extract
              ORDER BY question_id
         """)).all()
+        referential_codes = load_referential_codes(session)
 
     # Group rows by qid — a QE may have multiple (direction, bureau)
     by_qid: dict[str, list[tuple[str, str | None]]] = defaultdict(list)
     for r in rows:
-        k = canonical_from_extract(r.sous_direction, r.bureau)
+        k = canonical_from_extract(r.sous_direction, r.bureau, referential_codes)
         if k:
             by_qid[r.question_id].append((r.direction_txt, k))
 

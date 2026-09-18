@@ -10,12 +10,16 @@ the eval predict a ranking production no longer produces.
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
-from scripts.eval_bureau_with_min15 import canonical_from_extract
+from scripts.eval_bureau_with_min15 import (
+    canonical_from_extract,
+    load_referential_codes,
+)
 
 MIGRATION_PATH = (
     Path(__file__).resolve().parents[1]
@@ -23,6 +27,16 @@ MIGRATION_PATH = (
     / "versions"
     / "5b1c9e2d7a4f_min15_bureau_keys_at_bureau_level.py"
 )
+
+# A fixed stand-in for the `bureaux` referential, so the cases below do not
+# depend on what the local database happens to hold.
+REFERENTIAL_ROWS = [
+    "[SD1B] Relations avec les professions de santé",
+    "[MCGRM] Mission de la coordination et de la gestion du risque maladie",
+    "[DACI] Division des affaires communautaires et internationales",
+    "[SD2/2B] Protection de l'enfance et de l'adolescence",
+]
+REFERENTIAL_CODES = frozenset({"SD1B", "MCGRM", "DACI", "SD2/2B"})
 
 # (sous_direction, bureau, expected key) — None means "no bureau, drop the row".
 KEY_CASES = [
@@ -44,22 +58,43 @@ KEY_CASES = [
     ("SDP", "Médecine de ville", "SDP/MÉDECINE"),
     ("SD1", "Chef de bureau", None),
     ("SD2", None, None),
+    # The referential, not the capitalisation, tells a bureau code from a name:
+    # the same bureau written either way gets one key, not two.
+    ("SD SP", "PHARMACIE", "SDSP/PHARMACIE"),
+    ("SD1", "Mcgrm", "MCGRM"),
 ]
 
 
 @pytest.mark.parametrize(("sous_direction", "bureau", "expected"), KEY_CASES)
 def test_min15_key_is_the_bureau_not_the_role(sous_direction, bureau, expected):
-    assert canonical_from_extract(sous_direction, bureau) == expected
+    assert canonical_from_extract(sous_direction, bureau, REFERENTIAL_CODES) == expected
 
 
-def _migration_bureau_key_sql() -> str:
+class _BureauxSession:
+    """Just enough session to serve `SELECT nom FROM bureaux`."""
+
+    def __init__(self, labels):
+        self._rows = [SimpleNamespace(nom=label) for label in labels]
+
+    def execute(self, _statement):
+        return SimpleNamespace(all=lambda: self._rows)
+
+
+def test_referential_codes_are_read_off_the_bureau_labels():
+    labels = [*REFERENTIAL_ROWS, "Bureau sans code", "[SD 1 A] Code espacé"]
+    codes = load_referential_codes(_BureauxSession(labels))
+    # Spaces are squeezed out, as the SQL side does with REPLACE(…, ' ', '').
+    assert codes == REFERENTIAL_CODES | {"SD1A"}
+
+
+def _migration_bureau_key_sql(referential: str) -> str:
     spec = importlib.util.spec_from_file_location(
         "_min15_bureau_key_migration", MIGRATION_PATH
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.BUREAU_KEY_SQL
+    return module.bureau_key_sql(referential)
 
 
 @pytest.mark.integration
@@ -72,19 +107,28 @@ def test_view_sql_key_rule_matches_its_python_mirror():
     except OperationalError as exc:  # pragma: no cover - depends on the environment
         pytest.skip(f"no PostgreSQL available: {exc}")
 
-    # BUREAU_KEY_SQL reads e.sous_direction / e.bureau: give it a one-row `e`.
+    # The rule reads e.sous_direction / e.bureau and looks codes up in the
+    # referential: give it a one-row `e` and REFERENTIAL_ROWS as `ref`.
+    referential_values = ", ".join(f"(:ref{i})" for i in range(len(REFERENTIAL_ROWS)))
     query = text(
-        "SELECT " + _migration_bureau_key_sql() + " AS bureau_key "
+        f"WITH ref(nom) AS (VALUES {referential_values}) "
+        "SELECT " + _migration_bureau_key_sql("ref") + " AS bureau_key "
         "FROM (VALUES (CAST(:sous_direction AS text), CAST(:bureau AS text)))"
         " AS e(sous_direction, bureau)"
     )
+    referential = {f"ref{i}": nom for i, nom in enumerate(REFERENTIAL_ROWS)}
     with connection:
         mismatches = [
             (sous_direction, bureau, expected, observed)
             for sous_direction, bureau, expected in KEY_CASES
             if (
                 observed := connection.execute(
-                    query, {"sous_direction": sous_direction, "bureau": bureau}
+                    query,
+                    {
+                        **referential,
+                        "sous_direction": sous_direction,
+                        "bureau": bureau,
+                    },
                 ).scalar_one()
             )
             != expected

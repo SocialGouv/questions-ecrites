@@ -317,6 +317,8 @@ La clé construite par `question_attributions_all` pour les lignes MIN15 ajoutai
 
 Seules les étiquettes de rôle ou de niveau (`ROLE_TOKENS` : rédacteurs, chef, sous-direction, cabinet…) font sortir la ligne de la vue. Un bureau nommé en texte libre sous une sous-direction simple — la forme DGS et DGE, que la mesure ci-dessous ne couvre pas — garde sa clé `<sous-direction>/<bureau>` et continue de voter.
 
+Sous une sous-direction simple, c'est le **référentiel `bureaux`** qui dit si le segment est un code de bureau autonome (`MCGRM` → clé `MCGRM`) ou un nom de bureau (`Pharmacie` → clé `SDSP/PHARMACIE`) — la même lecture `[CODE]` que celle qui donne leur clé aux lignes d'attribution humaine. Se fier à la casse du libellé donnerait deux clés (`PHARMACIE` et `SDSP/PHARMACIE`) au même bureau selon l'humeur de l'agent qui a saisi l'étape, c'est-à-dire exactement la dispersion du vote que cette migration supprime.
+
 **Preuve.** Sur les 688 QE DSS qui ont à la fois un bureau humain et un extrait MIN15, les deux sources concordent dans 0,0 % des cas avec l'ancienne clé et dans 98,3 % des cas avec la clé au niveau du bureau (DGCS : 98,2 % dans les deux cas).
 
 **Mesure.** Leave-one-out du vote bureau de production (K = 25, somme des similarités), DGCS/DSS/DGOS, top-1 / top-3. La colonne « avec filtre » limite les suggestions à la direction de la question, comme le filtre de l'écran bureau.
