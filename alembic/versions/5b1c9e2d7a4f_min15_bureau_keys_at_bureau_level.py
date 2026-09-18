@@ -22,6 +22,12 @@ named in free text under a plain sous-direction (the DGS and DGE shape, which
 the measurement does not cover) keeps its previous "<sous-direction>/<bureau>"
 key rather than leaving the vote.
 
+Under a plain sous-direction, whether the segment is a bureau code standing on
+its own (MCGRM) or a bureau name (Pharmacie) is decided by looking it up in the
+`bureaux` referential — the same lookup that keys the attribution rows. Reading
+the capitalisation instead would give "Pharmacie" and "PHARMACIE" two keys for
+one bureau, the very vote split this migration removes.
+
 Rows without a bureau-level key are dropped before picking each question's
 latest step. Bureau suggestion feedback recorded against a MIN15 key moves to
 the new key when the mapping is unambiguous; downgrade restores the previous
@@ -57,7 +63,29 @@ PREVIOUS_KEY_SQL = rf"""
            ELSE COALESCE('/' || NULLIF(UPPER({FIRST_WORD}), ''), '')
          END"""
 
-BUREAU_KEY_SQL = rf"""
+# Bureau code of a referential row: '[SD2/2B] Protection…' -> 'SD2/2B'. The same
+# expression keys the attribution rows below and decides, in the MIN15 branch,
+# whether a bureau segment is a referential code or a free-text name — so both
+# sources of the view can only produce equal or distinct keys, never near-misses.
+REFERENTIAL_KEY_SQL = (
+    r"UPPER(REPLACE((regexp_match({alias}.nom, '^\s*\[([^\]]+)\]'))[1], ' ', ''))"
+)
+
+
+def _is_referential_code(referential: str) -> str:
+    code = REFERENTIAL_KEY_SQL.format(alias="rb")
+    # S608 below: interpolating module-level constants and a caller-chosen table
+    # name, never user input.
+    return f"EXISTS (SELECT 1 FROM {referential} rb WHERE {code} = UPPER({FIRST_WORD}))"  # noqa: S608
+
+
+def bureau_key_sql(referential: str = "bureaux") -> str:
+    """The MIN15 bureau key rule.
+
+    `referential` names the table holding the '[CODE] label' bureau rows; it is
+    a parameter only so tests can run the rule against a fixed referential.
+    """
+    return rf"""
     CASE
       WHEN {BUREAU_CODE} IS NOT NULL THEN {SOUS_DIRECTION} || '/' || UPPER({BUREAU_CODE})
       WHEN {SOUS_DIRECTION} ~ '^SD[0-9]+[A-Z]$' OR {SOUS_DIRECTION} ~ '^SD[A-Z]+[0-9]+$'
@@ -65,18 +93,21 @@ BUREAU_KEY_SQL = rf"""
       WHEN {SOUS_DIRECTION} ~ '^SD([0-9]+|[A-Z]+)$' THEN
         CASE WHEN COALESCE({FIRST_WORD}, '') = '' THEN NULL
              WHEN UPPER({FIRST_WORD}) IN {ROLE_TOKENS} THEN NULL
-             WHEN {FIRST_WORD} ~ '^[A-Z]{{2,}}$' THEN {FIRST_WORD}
+             WHEN {_is_referential_code(referential)} THEN UPPER({FIRST_WORD})
              ELSE {SOUS_DIRECTION} || '/' || UPPER({FIRST_WORD}) END
       WHEN {SOUS_DIRECTION} = 'CAB' THEN NULL
       WHEN UPPER({FIRST_WORD}) IN {ROLE_TOKENS} THEN {SOUS_DIRECTION}
       ELSE {SOUS_DIRECTION} || COALESCE('/' || NULLIF(UPPER({FIRST_WORD}), ''), '')
     END"""
 
-ATTRIBUTION_ROWS_SQL = r"""
+
+BUREAU_KEY_SQL = bureau_key_sql()
+
+ATTRIBUTION_ROWS_SQL = rf"""
 attribution_rows AS (
     SELECT
         qa.question_id,
-        UPPER(REPLACE((regexp_match(b.nom, '^\s*\[([^\]]+)\]'))[1], ' ', ''))
+        {REFERENTIAL_KEY_SQL.format(alias="b")}
             AS bureau_key,
         b.nom AS bureau_label,
         d.nom AS direction_label,
@@ -86,7 +117,7 @@ attribution_rows AS (
     LEFT JOIN directions d ON d.id = b.direction_id
     WHERE qa.bureau_reel_id IS NOT NULL
       AND b.nom ~ '^\s*\[[^\]]+\]'
-)"""
+)"""  # noqa: S608 -- interpolating module-level constants, not input
 
 MIN15_SOURCE_FILTER_SQL = r"""
     e.sous_direction IS NOT NULL AND BTRIM(e.sous_direction) <> ''
