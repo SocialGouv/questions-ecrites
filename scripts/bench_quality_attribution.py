@@ -265,6 +265,13 @@ def main() -> None:
 
     if args.feature == "direction" and args.gt == "all":
         ap.error("--gt all applies to bureau only")
+    if args.exclude_siblings and not args.knn:
+        ap.error(
+            f"--exclude-siblings needs an explicit --knn (use {SIBLING_OVERFETCH} on "
+            "BOTH arms): the exclusion is applied inside the LIMIT, so a delta "
+            "against a production-KNN baseline measures the approximate-search "
+            "regime rather than the leak"
+        )
 
     report = run(args)
     args.output.parent.mkdir(parents=True, exist_ok=True)

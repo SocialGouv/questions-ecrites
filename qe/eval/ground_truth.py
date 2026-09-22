@@ -153,12 +153,31 @@ class GroundTruthCase:
         return len(self.mate_ids)
 
 
-def allotissement_cases(clusters: Iterable[AnswerCluster]) -> list[GroundTruthCase]:
-    """Cases where the mates were answered jointly, on the same JO date."""
+def allotissement_cases(
+    clusters: Iterable[AnswerCluster], *, require_published_at_source: bool = True
+) -> list[GroundTruthCase]:
+    """Cases where the mates were answered jointly, on the same JO date.
+
+    ``require_published_at_source`` drops mates published after the source
+    question, mirroring ``edr_cases``: ``as_of_predicate("allotissement")``
+    filters the pool on ``q.date_publication_jo <= :as_of``, so such a mate
+    is absent from the pool and scores as a miss no ranking could avoid.
+    The relation is symmetric, so keeping them makes roughly half of every
+    cross-publication-date joint answer unwinnable.
+    """
     cases: list[GroundTruthCase] = []
     for cluster in clusters:
         for member in cluster.members:
             mates = cluster.same_date_as(member)
+            if require_published_at_source:
+                cutoff = member.date_publication_jo
+                mates = tuple(
+                    m
+                    for m in mates
+                    if cutoff is not None
+                    and m.date_publication_jo is not None
+                    and m.date_publication_jo <= cutoff
+                )
             if mates:
                 cases.append(
                     GroundTruthCase(
@@ -227,6 +246,10 @@ _HUMAN_DIRECTION_SQL = sqltext(
     """
 )
 
+# One row per question, guaranteed: the materialized view carries a UNIQUE
+# index on question_id (migration 5b1c9e2d7a4f), and its min15 half excludes
+# any question already carrying an attribution row. A refresh producing a
+# duplicate would fail rather than make the collapse below order-dependent.
 _BUREAU_SQL = sqltext(
     """
     SELECT va.question_id AS question_id,

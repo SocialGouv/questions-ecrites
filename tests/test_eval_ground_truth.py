@@ -127,6 +127,27 @@ def test_edr_excludes_an_answer_published_after_the_source_arrived():
     assert relaxed[0].mate_ids == {"A"}
 
 
+def test_allotissement_excludes_a_mate_published_after_the_source():
+    # Co-answered on one JO date, but B only reached the JO after A: the
+    # as-of-t pool (date_publication_jo <= as_of) cannot contain B when
+    # searching from A, so keeping it would score an unwinnable miss.
+    cluster = AnswerCluster(
+        text_hash="h",
+        members=(
+            member("A", answered=date(2024, 6, 1), published=date(2023, 1, 1)),
+            member("B", answered=date(2024, 6, 1), published=date(2024, 1, 1)),
+        ),
+    )
+    cases = allotissement_cases([cluster])
+    assert [c.question_id for c in cases] == ["B"]
+    assert cases[0].mate_ids == {"A"}
+    relaxed = allotissement_cases([cluster], require_published_at_source=False)
+    assert {c.question_id: c.mate_ids for c in relaxed} == {
+        "A": {"B"},
+        "B": {"A"},
+    }
+
+
 def test_as_of_allotissement_pool_admits_the_not_yet_answered():
     sql = as_of_predicate("allotissement")
     assert "date_reponse_jo IS NULL OR r.date_reponse_jo > :as_of" in sql
