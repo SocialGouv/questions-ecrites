@@ -1,11 +1,14 @@
 """The triggers keeping vec_questions_by_status in sync (migration c99252387f8c).
 
-Runs against PostgreSQL inside a rolled-back transaction; skipped without one,
-or when the migration isn't applied.
+Runs against PostgreSQL — inside a rolled-back transaction, except for the
+concurrency tests, which commit and clean up — and is skipped without one, or
+when the migration isn't applied.
 """
 
 from __future__ import annotations
 
+import threading
+import time
 import uuid
 from dataclasses import dataclass
 
@@ -157,3 +160,118 @@ def test_vector_delete_cascades(pg):
     )
 
     assert pg.copy() is None
+
+
+# The two writers race on committed data, so these tests commit and clean up.
+@pytest.fixture
+def committed():
+    from qe import db
+
+    try:
+        engine = db.get_engine()
+        with engine.connect() as probe:
+            if (
+                probe.execute(
+                    text("SELECT to_regclass('vec_questions_by_status')")
+                ).scalar_one()
+                is None
+            ):
+                pytest.skip("vec_questions_by_status not migrated")
+    except OperationalError as exc:  # pragma: no cover - depends on the environment
+        pytest.skip(f"no PostgreSQL available: {exc}")
+
+    qid, point_id = f"TEST-QE-{uuid.uuid4()}", str(uuid.uuid4())
+    with engine.begin() as conn:
+        Db(conn, qid, point_id).insert_question("EN_COURS")
+    try:
+        yield engine, qid, point_id
+    finally:
+        with engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM vec_questions_opendata WHERE id = :id"),
+                {"id": point_id},
+            )
+            conn.execute(text("DELETE FROM questions WHERE id = :id"), {"id": qid})
+
+
+def _in_thread(fn):
+    errors: list[BaseException] = []
+
+    def run():
+        try:
+            fn()
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the test
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    return thread, errors
+
+
+def _open(engine) -> Connection:
+    conn = engine.connect()
+    # A lock that is never released fails the test instead of hanging it.
+    conn.execute(text("SET LOCAL lock_timeout = '10s'"))
+    return conn
+
+
+def _final_status(engine, point_id: str) -> str | None:
+    with engine.connect() as conn:
+        return conn.execute(
+            text("SELECT etat_question FROM vec_questions_by_status WHERE id = :id"),
+            {"id": point_id},
+        ).scalar_one_or_none()
+
+
+@pytest.mark.integration
+def test_status_update_pending_while_vector_is_written(committed):
+    engine, qid, point_id = committed
+    updater = _open(engine)
+    try:
+        updater.execute(
+            text("UPDATE questions SET etat_question = 'REPONDU' WHERE id = :id"),
+            {"id": qid},
+        )
+
+        def embed():
+            with _open(engine) as conn:
+                Db(conn, qid, point_id).upsert_vec(0.5)
+                conn.commit()
+
+        thread, errors = _in_thread(embed)
+        time.sleep(0.5)
+        updater.commit()
+        thread.join(timeout=15)
+    finally:
+        updater.close()
+
+    assert not errors, errors
+    assert _final_status(engine, point_id) == "REPONDU"
+
+
+@pytest.mark.integration
+def test_vector_write_pending_while_status_is_updated(committed):
+    engine, qid, point_id = committed
+    embedder = _open(engine)
+    try:
+        Db(embedder, qid, point_id).upsert_vec(0.5)
+
+        def update_status():
+            with _open(engine) as conn:
+                conn.execute(
+                    text(
+                        "UPDATE questions SET etat_question = 'REPONDU' WHERE id = :id"
+                    ),
+                    {"id": qid},
+                )
+                conn.commit()
+
+        thread, errors = _in_thread(update_status)
+        time.sleep(0.5)
+        embedder.commit()
+        thread.join(timeout=15)
+    finally:
+        embedder.close()
+
+    assert not errors, errors
+    assert _final_status(engine, point_id) == "REPONDU"

@@ -92,8 +92,10 @@ def _recall(conn, point_id: str, status: str) -> float:
     index_name = f"vec_q_status_hnsw_{status.lower()}_idx"
     if index_name not in plan:
         raise AssertionError(f"{point_id}/{status}: plan does not scan {index_name}")
+    if not exact:
+        raise AssertionError(f"{point_id}/{status}: exact search returned nothing")
     got = set(conn.execute(sqltext(indexed_sql), params).scalars().all())
-    return len(got & exact) / len(exact) if exact else 1.0
+    return len(got & exact) / len(exact)
 
 
 def run_checks(sample_size: int, min_recall: float) -> int:
@@ -112,8 +114,12 @@ def run_checks(sample_size: int, min_recall: float) -> int:
             with engine.begin() as conn:
                 conn.execute(sqltext("SET TRANSACTION READ ONLY"))
                 recalls.append(_recall(conn, point_id, status))
-        mean = sum(recalls) / len(recalls) if recalls else 1.0
-        worst = min(recalls, default=1.0)
+        if not recalls:
+            logger.error("%s: empty sample — recall not measured.", status)
+            failures += 1
+            continue
+        mean = sum(recalls) / len(recalls)
+        worst = min(recalls)
         logger.info(
             "%s: recall@%d mean %.1f%%, worst %.1f%% (n=%d, ef_search=%d)",
             status,
