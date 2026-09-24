@@ -325,7 +325,8 @@ class IngestCursor(Base):
 
 # Expected vector dimension for BAAI/bge-m3 (the default embedding model).
 # Change this constant if you switch to a different model, then create a new
-# Alembic migration to alter the column type.
+# Alembic migration to alter the column type — including the halfvec(1024)
+# column of vec_questions_by_status (migration c99252387f8c).
 _VECTOR_DIM = 1024
 
 
