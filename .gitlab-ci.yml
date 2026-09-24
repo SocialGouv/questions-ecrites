@@ -57,7 +57,7 @@ deploy:argocd:
     # absence is normal and must not fail the deploy.
     - OPTIONAL_MANIFESTS="questions-ecrites/job-an-backfill.yaml"
     - for f in $MANIFESTS; do test -f "$f" || { echo "$f not found in data-platform-argocd"; exit 1; }; done
-    - for f in $OPTIONAL_MANIFESTS; do if [ -f "$f" ]; then MANIFESTS="$MANIFESTS $f"; else echo "absent, ignoré : $f"; fi; done
+    - 'for f in $OPTIONAL_MANIFESTS; do if [ -f "$f" ]; then MANIFESTS="$MANIFESTS $f"; else echo "absent, ignoré : $f"; fi; done'
     - sed -i -E "s|(image. pic-registry.sg.social.gouv.fr/socialgouv/data-ia/data-platform/questions-ecrites-back).*|\1:${CI_COMMIT_SHORT_SHA}|" $MANIFESTS
     # sed exits 0 even when the pattern matches nothing, so a silent no-op
     # (e.g. the image name prefix changes) would otherwise push a partial,
