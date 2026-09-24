@@ -10,8 +10,13 @@ Read-only. Exits non-zero when any check fails:
   the exact brute-force top-K at or above `--min-recall`, and the plan
   really scans the partial index.
 
+Each exact search reads the whole vector table (~25 s on preprod) and evicts
+the partial index from shared_buffers: `--skip-recall` runs the sync check
+alone, as the nightly ingestion job does.
+
 Usage:
     poetry run python scripts/verify_status_index.py [--sample-size 30] [--min-recall 0.95]
+    poetry run python scripts/verify_status_index.py --skip-recall
 """
 
 from __future__ import annotations
@@ -98,15 +103,20 @@ def _recall(conn, point_id: str, status: str) -> float:
     return len(got & exact) / len(exact)
 
 
-def run_checks(sample_size: int, min_recall: float) -> int:
+def run_checks(sample_size: int, min_recall: float, skip_recall: bool = False) -> int:
     engine = db.get_engine()
     failures = 0
     with engine.connect() as conn:
         missing = conn.execute(MISSING_SQL).scalar_one()
         drift = conn.execute(DRIFT_SQL).scalar_one()
-        sample = conn.execute(SAMPLE_SQL, {"n": sample_size}).scalars().all()
     logger.info("copy: %d missing row(s), %d status drift(s)", missing, drift)
     failures += int(missing > 0) + int(drift > 0)
+    if skip_recall:
+        logger.info("recall check skipped (--skip-recall)")
+        return failures
+
+    with engine.connect() as conn:
+        sample = conn.execute(SAMPLE_SQL, {"n": sample_size}).scalars().all()
 
     for status in STATUSES:
         recalls = []
@@ -139,9 +149,10 @@ def main() -> None:
     )
     ap.add_argument("--sample-size", type=int, default=30)
     ap.add_argument("--min-recall", type=float, default=0.95)
+    ap.add_argument("--skip-recall", action="store_true")
     args = ap.parse_args()
 
-    failures = run_checks(args.sample_size, args.min_recall)
+    failures = run_checks(args.sample_size, args.min_recall, args.skip_recall)
     if failures:
         logger.error("%d check(s) failed.", failures)
         sys.exit(1)
