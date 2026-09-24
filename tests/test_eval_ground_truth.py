@@ -17,6 +17,7 @@ from qe.eval.ground_truth import (
     GroundTruthCase,
     allotissement_cases,
     as_of_predicate,
+    cases_for_pool,
     edr_cases,
     stratified_sample,
 )
@@ -188,3 +189,86 @@ def test_stratified_sample_is_reproducible_for_a_fixed_seed():
     first = stratified_sample(cases, 20, random.Random(1234))
     second = stratified_sample(cases, 20, random.Random(1234))
     assert [c.question_id for c in first] == [c.question_id for c in second]
+
+
+def test_edr_relaxed_truth_is_a_superset_of_the_as_of_truth():
+    """The two variants exist to match two different candidate pools.
+
+    An unrestricted search reaches mates the as-of-t filter drops, so
+    scoring such a run against the as-of-t truth turns retrieved mates
+    into misses. Measured on preprod, 72 % (allotissement) and 80 % (EDR)
+    of the dropped mates are in fact retrieved there.
+    """
+    cluster = AnswerCluster(
+        text_hash="h",
+        members=(
+            member("A", answered=date(2024, 3, 1), published=date(2023, 1, 1)),
+            member("B", answered=date(2024, 9, 1), published=date(2024, 1, 1)),
+        ),
+    )
+    assert edr_cases(cluster_list := [cluster]) == []
+    relaxed = edr_cases(cluster_list, require_available_at_publication=False)
+    assert {c.question_id: c.mate_ids for c in relaxed} == {"B": frozenset({"A"})}
+
+
+def test_allotissement_relaxed_truth_is_a_superset_of_the_as_of_truth():
+    cluster = AnswerCluster(
+        text_hash="h",
+        members=(
+            member("A", answered=date(2024, 6, 1), published=date(2023, 1, 1)),
+            member("B", answered=date(2024, 6, 1), published=date(2024, 1, 1)),
+        ),
+    )
+    strict = {c.question_id: c.mate_ids for c in allotissement_cases([cluster])}
+    relaxed = {
+        c.question_id: c.mate_ids
+        for c in allotissement_cases([cluster], require_published_at_source=False)
+    }
+    assert strict == {"B": frozenset({"A"})}
+    assert relaxed == {"A": frozenset({"B"}), "B": frozenset({"A"})}
+    for qid, mates in strict.items():
+        assert mates <= relaxed[qid]
+
+
+CROSS_DATE = AnswerCluster(
+    text_hash="h-cross",
+    members=(
+        member("A", answered=date(2024, 6, 1), published=date(2023, 1, 1)),
+        member("B", answered=date(2024, 6, 1), published=date(2024, 1, 1)),
+    ),
+)
+LATER_REUSE = AnswerCluster(
+    text_hash="h-later",
+    members=(
+        member("C", answered=date(2024, 3, 1), published=date(2023, 1, 1)),
+        member("D", answered=date(2024, 9, 1), published=date(2024, 1, 1)),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "feature,clusters,strict_ids,relaxed_ids",
+    [
+        ("allotissement", [CROSS_DATE], {"B"}, {"A", "B"}),
+        ("edr", [LATER_REUSE], set(), {"D"}),
+    ],
+)
+def test_cases_for_pool_widens_the_truth_for_an_unrestricted_pool(
+    feature, clusters, strict_ids, relaxed_ids
+):
+    """The wiring, not just the underlying filters.
+
+    An unrestricted run scored against as-of-t truth counts retrieved
+    mates as misses, so the pool has to reach the variant selection.
+    """
+    strict = cases_for_pool(clusters, feature, "as-of-t")
+    relaxed = cases_for_pool(clusters, feature, "unrestricted")
+    assert {c.question_id for c in strict} == strict_ids
+    assert {c.question_id for c in relaxed} == relaxed_ids
+
+
+def test_cases_for_pool_rejects_an_unknown_pool_or_feature():
+    with pytest.raises(ValueError):
+        cases_for_pool([], "allotissement", "today")
+    with pytest.raises(ValueError):
+        cases_for_pool([], "similar", "as-of-t")

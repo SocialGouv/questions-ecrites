@@ -220,6 +220,29 @@ def edr_cases(
     return cases
 
 
+def cases_for_pool(
+    clusters: Iterable[AnswerCluster], feature: str, pool: str
+) -> list[GroundTruthCase]:
+    """Build the truth matching the candidate pool the run will search.
+
+    Both features' date filters mirror ``as_of_predicate``. Against an
+    unrestricted pool they delete mates the search reaches — measured on
+    preprod, 72% (allotissement) and 80% (EDR) of the mates they drop are
+    actually retrieved there, each one then scored as a miss. Selecting
+    the variant lives here rather than in the caller so the two features
+    cannot drift apart on it.
+    """
+    if pool not in ("as-of-t", "unrestricted"):
+        raise ValueError(f"unknown pool: {pool!r}")
+    as_of = pool == "as-of-t"
+    clusters = list(clusters)
+    if feature == "allotissement":
+        return allotissement_cases(clusters, require_published_at_source=as_of)
+    if feature == "edr":
+        return edr_cases(clusters, require_available_at_publication=as_of)
+    raise ValueError(f"unknown feature: {feature!r}")
+
+
 # ---------------------------------------------------------------------------
 # Attribution ground truth
 # ---------------------------------------------------------------------------

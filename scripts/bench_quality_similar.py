@@ -41,8 +41,7 @@ from sqlalchemy import text as sqltext
 
 from qe import db
 from qe.eval.ground_truth import (
-    allotissement_cases,
-    edr_cases,
+    cases_for_pool,
     fetch_answer_clusters,
     stratified_sample,
 )
@@ -76,11 +75,10 @@ def emit_cases(args: argparse.Namespace) -> dict:
         clusters = fetch_answer_clusters(session)
         logger.info("answer-text clusters: %d", len(clusters))
 
-        if args.feature == "allotissement":
-            cases = allotissement_cases(clusters)
-        else:
-            cases = edr_cases(clusters)
-        logger.info("%s ground-truth cases: %d", args.feature, len(cases))
+        cases = cases_for_pool(clusters, args.feature, args.pool)
+        logger.info(
+            "%s ground-truth cases (pool=%s): %d", args.feature, args.pool, len(cases)
+        )
 
         # A source question with no vector cannot be searched from at all.
         ids = [c.question_id for c in cases]
@@ -107,6 +105,9 @@ def emit_cases(args: argparse.Namespace) -> dict:
 
     return {
         "feature": args.feature,
+        # The runner refuses a cases file whose pool differs from the one
+        # it is about to search — the mismatch is invisible downstream.
+        "pool": args.pool,
         "seed": args.seed,
         "population": len(cases),
         "cases": [
@@ -229,6 +230,14 @@ def main() -> None:
     mode.add_argument("--emit-cases", action="store_true")
     mode.add_argument("--score", action="store_true")
     ap.add_argument("--feature", choices=("allotissement", "edr"))
+    ap.add_argument(
+        "--pool",
+        choices=("as-of-t", "unrestricted"),
+        default="as-of-t",
+        help="Which candidate pool the run will search. Selects the matching "
+        "ground truth: as-of-t drops mates outside the pool, unrestricted "
+        "keeps them because the search can reach them.",
+    )
     ap.add_argument("--sample", type=int, default=400)
     ap.add_argument("--seed", type=int, default=20260922)
     ap.add_argument("--runs", type=Path, help="runs JSON from the TS runner")
