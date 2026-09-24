@@ -69,6 +69,7 @@ this repo.
 | ----------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `vec_questions_opendata`      | Embedded parliamentary questions            | `scripts/embed_questions.py`                                                                           |
 | `vec_answers_opendata`        | Embedded parliamentary answers (Reponse)    | `scripts/embed_answers.py`, auto-called by `scripts/ingest_an.py` and `scripts/ingest_senat.py` |
+| `vec_questions_by_status`     | halfvec copy of `vec_questions_opendata` + live `etat_question`, partial HNSW index per status (REPONDU) — read by qe-front's `/similar` | Triggers on `vec_questions_opendata` and `questions` — never write it directly; check with `scripts/verify_status_index.py` |
 
 Row IDs in all tables are deterministic UUID strings derived from SHA-256 hashes (see `qe/hashing.py`). Use `stable_question_point_id(question_id)` to resolve a question's vector row ID, and `stable_answer_point_id(reponse_id)` for answers.
 
