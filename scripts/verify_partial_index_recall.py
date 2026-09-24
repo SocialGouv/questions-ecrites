@@ -176,7 +176,7 @@ def _check_one(
 
 
 def run_checks(sample_size: int = 30) -> int:
-    """Run the direction+bureau recall check, return the total mismatch count."""
+    """Run the direction+bureau recall check, return mismatches + empty samples."""
     engine = db.get_engine()
     failures = 0
 
@@ -221,6 +221,11 @@ def run_checks(sample_size: int = 30) -> int:
             )
             pool_size = conn.execute(pool_size_sql[label]).scalar_one()
 
+        if not sample:
+            logger.error("%s: empty sample — recall not measured.", label)
+            failures += 1
+            continue
+
         mismatches = 0
         for qid in sample:
             with engine.begin() as conn:
@@ -253,7 +258,8 @@ def main() -> None:
     failures = run_checks(args.sample_size)
     if failures:
         logger.error(
-            "%d total mismatch(es) — partial index recall has regressed.", failures
+            "%d failure(s) — partial index recall regressed or was not measured.",
+            failures,
         )
         sys.exit(1)
     logger.info("All checks passed — partial index votes match exact search.")
