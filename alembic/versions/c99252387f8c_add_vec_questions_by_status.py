@@ -72,15 +72,17 @@ def upgrade() -> None:
     op.execute("""
         CREATE FUNCTION vec_questions_by_status_sync_vector() RETURNS trigger
         LANGUAGE plpgsql AS $$
+        DECLARE
+            etat text;
         BEGIN
+            -- FOR SHARE: waits for a pending status update on the question,
+            -- and makes a later one wait until this copy is committed —
+            -- otherwise its UPDATE below can't see the copy and is lost.
+            SELECT q.etat_question INTO etat FROM questions q
+            WHERE q.id = NEW.payload ->> 'question_id'
+            FOR SHARE;
             INSERT INTO vec_questions_by_status (id, question_id, etat_question, vector)
-            VALUES (
-                NEW.id,
-                NEW.payload ->> 'question_id',
-                (SELECT q.etat_question FROM questions q
-                 WHERE q.id = NEW.payload ->> 'question_id'),
-                NEW.vector::halfvec
-            )
+            VALUES (NEW.id, NEW.payload ->> 'question_id', etat, NEW.vector::halfvec)
             ON CONFLICT (id) DO UPDATE
             SET question_id = EXCLUDED.question_id,
                 etat_question = EXCLUDED.etat_question,
