@@ -72,7 +72,12 @@ def _load_existing_points(
     filter_ = (
         {"must": [{"key": "source", "match": {"value": source}}]} if source else None
     )
-    points = vector_store.scroll_all(collection, filter=filter_, with_vectors=False)
+    points = vector_store.scroll_all(
+        collection,
+        filter=filter_,
+        with_vectors=False,
+        payload_keys=("reponse_id", "embedding_model", "content_hash"),
+    )
     result: dict[str, tuple[str, str]] = {}
     for point in points:
         payload = point.get("payload", {})

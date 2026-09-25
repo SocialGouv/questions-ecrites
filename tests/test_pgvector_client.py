@@ -16,6 +16,8 @@ from contextlib import contextmanager
 
 import pytest
 
+from sqlalchemy.dialects import postgresql
+
 import qe.clients.pgvector_client as pgvector_client
 
 
@@ -132,3 +134,49 @@ def test_search_sets_ef_search_and_iterative_scan_on_supported_extension(monkeyp
     pgvector_client.PgvectorClient().search("questions_opendata", [0.1, 0.2], top_k=10)
     assert any("hnsw.iterative_scan" in sql for sql in session.executed)
     assert any("hnsw.ef_search" in sql for sql in session.executed)
+
+
+class _Row(tuple):
+    @property
+    def id(self):
+        return self[0]
+
+
+class _ScrollSession:
+    def __init__(self, rows):
+        self.rows = rows
+        self.sql = ""
+
+    def execute(self, stmt):
+        self.sql = str(stmt.compile(dialect=postgresql.dialect()))
+        return _FakeResult(rows=self.rows)
+
+
+def test_scroll_all_payload_keys_reads_only_those_keys(monkeypatch):
+    # The embed scripts only need three keys per point; fetching the whole
+    # payload (question/answer text included) is what made this load heavy.
+    session = _ScrollSession(
+        [_Row(("p1", "q1", "bge-m3", "h1")), _Row(("p2", "q2", None, "h2"))]
+    )
+    monkeypatch.setattr(
+        pgvector_client.db, "get_session", lambda: _fake_get_session(session)
+    )
+    points = pgvector_client.PgvectorClient().scroll_all(
+        "questions_opendata",
+        with_vectors=False,
+        payload_keys=("question_id", "embedding_model", "content_hash"),
+    )
+    selected = session.sql.split("FROM")[0]
+    col = "vec_questions_opendata.payload"
+    assert selected.count(col) == selected.count(f"{col} ->>") == 3
+    assert points == [
+        {
+            "id": "p1",
+            "payload": {
+                "question_id": "q1",
+                "embedding_model": "bge-m3",
+                "content_hash": "h1",
+            },
+        },
+        {"id": "p2", "payload": {"question_id": "q2", "content_hash": "h2"}},
+    ]

@@ -58,4 +58,5 @@ class VectorStore(Protocol):
         filter: dict | None = None,
         with_vectors: bool = True,
         batch_size: int = 100,
+        payload_keys: Sequence[str] | None = None,
     ) -> list[dict]: ...
