@@ -1,12 +1,8 @@
 """HTTP client for qe-front's internal precompute route.
 
-Phase 2 of docs/llm-judge-caching-plan.md (qe-front repo): after an
-embedding run, the ingestion pipeline triggers qe-front to precompute
-rerank+judge results for newly-embedded EN_COURS questions into
-`question_similar_cache`, off qe-front's request path. Best-effort by
-design — a failure here must never fail the ingestion run that
-triggered it, since the live `/similar` route still computes on demand
-without a warm cache (Phase 1).
+The route fills qe-front's `/similar` stage caches (neighbours, rerank
+scores, judge verdicts) for a time budget per call and reports what is
+left; `precompute_until_done` keeps calling it until nothing is.
 """
 
 from __future__ import annotations
@@ -18,6 +14,17 @@ from typing import Callable
 import requests
 
 logger = logging.getLogger(__name__)
+
+COUNTERS = (
+    "processed",
+    "queue",
+    "neighbors",
+    "completed",
+    "reranked",
+    "judged",
+    "throttled",
+    "errors",
+)
 
 
 class QeFrontClient:
@@ -37,15 +44,10 @@ class QeFrontClient:
             timeout=self.timeout,
         )
 
-    def precompute_similar_cache(self, limit: int) -> dict | None:
-        """Trigger one precompute batch of up to `limit` questions.
-
-        Returns the parsed response body, or None on any transport/HTTP
-        failure (logged, never raised) — the caller treats this as
-        "nothing precomputed this run", not as an ingestion failure.
-        """
+    def precompute(self, *, limit: int, budget_seconds: int) -> dict | None:
+        """One precompute call. None on any transport/HTTP/body failure (logged)."""
         try:
-            response = self._post({"limit": limit})
+            response = self._post({"limit": limit, "budgetSeconds": budget_seconds})
             response.raise_for_status()
             payload = response.json()
             return payload if isinstance(payload, dict) else None
@@ -53,97 +55,51 @@ class QeFrontClient:
             logger.warning("qe-front precompute call failed: %s", exc)
             return None
 
-    def precompute_similar_cache_batches(
+    def precompute_until_done(
         self,
         *,
-        batch_limit: int,
+        limit: int,
+        budget_seconds: int,
         max_duration_seconds: float,
         _clock: Callable[[], float] = time.monotonic,
     ) -> dict:
-        """Drain the precompute backlog in batches of `batch_limit`.
+        """Call the route until it reports `done`, stops making progress,
+        fails, or `max_duration_seconds` elapses.
 
-        The route always selects the oldest still-missing questions first
-        (a NOT EXISTS anti-join on question_similar_cache), so each batch
-        makes forward progress and never repeats work a previous batch (or a
-        previous run) already finished. That makes it safe to just keep
-        calling: a backlog bigger than one batch — the very first run,
-        backfilling every pre-existing EN_COURS question, or an ordinary day
-        with hundreds of newly-embedded ones — gets fully cleared within this
-        run if it fits the time budget, or picked up again by the next run
-        otherwise. Nothing is lost or double-counted between runs.
-
-        Stops when: the backlog is drained (a batch reports `processed ==
-        0`), every question errored (`errors >= processed` — the anti-join
-        is unchanged, so the next batch would just re-select the same
-        failing questions), a batch made no progress of any kind (`cached
-        == 0` AND `empty == 0` — nothing was written to
-        question_similar_cache, but also no question_similar_precompute_empty
-        tombstone was recorded either, e.g. an older qe-front that doesn't
-        report `empty` yet — so the anti-join is unchanged and the next
-        batch would just re-select the same questions), a batch call fails
-        outright (already logged by `precompute_similar_cache` —
-        best-effort, try again next run), or `max_duration_seconds` elapses
-        (a safety bound so one unusually large backlog can't consume the
-        whole ingestion job's time budget).
-
-        `empty` (a question genuinely attempted and found to have nothing
-        worth caching, recorded as a tombstone so the anti-join stops
-        re-selecting it — see qe-front's question_similar_precompute_empty)
-        counts as progress on its own even when `cached` is 0: a batch of
-        entirely tombstoned questions still shrinks the backlog for the
-        *next* batch, unlike the old cached-only check which would stop
-        after just one such batch and leave the rest of a same-shaped
-        backlog for a future run.
+        Returns the summed counters plus `calls`, the last `pending_left`,
+        `done`, and `failed` (a call itself failed).
         """
         started = _clock()
-        totals = {
-            "batches": 0,
-            "processed": 0,
-            "cached": 0,
-            "empty": 0,
-            "reciprocal": 0,
-            "pruned": 0,
-            "errors": 0,
-        }
+        totals: dict = dict.fromkeys(COUNTERS, 0)
+        totals.update(calls=0, pending_left=None, done=False, failed=False)
         while _clock() - started < max_duration_seconds:
-            result = self.precompute_similar_cache(limit=batch_limit)
+            result = self.precompute(limit=limit, budget_seconds=budget_seconds)
             if result is None:
+                totals["failed"] = True
                 break
-            totals["batches"] += 1
-            for key in (
-                "processed",
-                "cached",
-                "empty",
-                "reciprocal",
-                "pruned",
-                "errors",
-            ):
+            totals["calls"] += 1
+            for key in COUNTERS:
                 value = result.get(key, 0)
                 totals[key] += value if isinstance(value, int) else 0
-            processed = result.get("processed", 0)
-            errors = result.get("errors", 0)
-            cached = result.get("cached", 0)
-            empty = result.get("empty", 0)
-            if not isinstance(processed, int) or processed == 0:
+            totals["pending_left"] = result.get("pending_left")
+            if result.get("done") is True:
+                totals["done"] = True
                 break
-            if isinstance(errors, int) and errors >= processed:
-                break
-            made_progress = (isinstance(cached, int) and cached > 0) or (
-                isinstance(empty, int) and empty > 0
-            )
-            if not made_progress:
+            if result.get("processed", 0) == 0:
+                # Same work would be selected again: whatever blocks it
+                # (quota, Albert down) won't clear within this run.
                 logger.warning(
-                    "qe-front precompute: batch processed %d question(s) but made no progress "
-                    "(nothing cached, nothing tombstoned); stopping to avoid re-selecting the "
-                    "same questions every batch.",
-                    processed,
+                    "qe-front precompute made no progress (%s); stopping until next run.",
+                    {
+                        key: result.get(key)
+                        for key in ("throttled", "errors", "pending_left")
+                    },
                 )
                 break
         else:
-            logger.warning(
-                "qe-front precompute: time budget (%.0fs) reached after %d batch(es); "
-                "backlog may not be fully drained, continuing next run.",
+            logger.info(
+                "qe-front precompute: time budget (%.0fs) reached, %s left for the next run.",
                 max_duration_seconds,
-                totals["batches"],
+                totals["pending_left"],
             )
         return totals

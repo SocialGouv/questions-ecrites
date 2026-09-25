@@ -1,12 +1,10 @@
-"""Tests for QeFrontClient's fail-open contract.
-
-The precompute call is best-effort (docs/llm-judge-caching-plan.md Phase 2):
-a transport/HTTP failure must be swallowed and logged, never raised, since
-the ingestion run that triggers it must succeed regardless of whether
-qe-front's cache warmed up.
-"""
+"""Tests for QeFrontClient and the precompute job's exit contract."""
 
 from __future__ import annotations
+
+import argparse
+import importlib.util
+from pathlib import Path
 
 import requests
 
@@ -43,317 +41,115 @@ class _ScriptedClient(QeFrontClient):
         return action
 
 
-def test_returns_the_parsed_body_on_success():
-    client = _ScriptedClient([_FakeResponse(200, {"processed": 3, "cached": 12})])
-    result = client.precompute_similar_cache(limit=50)
-    assert result == {"processed": 3, "cached": 12}
-    assert client.calls == [{"limit": 50}]
-
-
-def test_returns_none_on_http_error_without_raising():
-    client = _ScriptedClient([_FakeResponse(403)])
-    result = client.precompute_similar_cache(limit=50)
-    assert result is None
-
-
-def test_returns_none_on_transport_error_without_raising():
-    client = _ScriptedClient([requests.ConnectionError("connection refused")])
-    result = client.precompute_similar_cache(limit=50)
-    assert result is None
-
-
-def test_returns_none_when_the_response_body_is_not_a_json_object():
-    # A 200 whose body is a JSON array/string/number is not a RequestException
-    # and would otherwise pass through as-is, breaking the caller's `.get()`
-    # calls (embed_questions.py:505) with an AttributeError the fail-open
-    # contract is supposed to prevent.
-    client = _ScriptedClient([_FakeResponse(200, ["not", "a", "dict"])])
-    result = client.precompute_similar_cache(limit=50)
-    assert result is None
+def _report(**overrides):
+    base = {
+        "processed": 1,
+        "judged": 5,
+        "errors": 0,
+        "throttled": 0,
+        "pending_left": 10,
+        "done": False,
+    }
+    return _FakeResponse(200, {**base, **overrides})
 
 
 def _clock_from(ticks):
-    """A fake monotonic clock that advances one value per call."""
     ticks = iter(ticks)
     return lambda: next(ticks)
 
 
-def test_batches_drains_the_backlog_across_multiple_calls():
-    # Three batches: two full pages, then an empty one signalling "done" —
-    # the backlog is smaller than batch_limit * 2 but bigger than one batch.
+def _until_done(client, clock=None, max_duration=3600):
+    kwargs = {"_clock": clock} if clock else {}
+    return client.precompute_until_done(
+        limit=5, budget_seconds=60, max_duration_seconds=max_duration, **kwargs
+    )
+
+
+def test_one_call_passes_limit_and_budget_and_returns_the_body():
+    client = _ScriptedClient([_report()])
+    assert client.precompute(limit=5, budget_seconds=60)["judged"] == 5
+    assert client.calls == [{"limit": 5, "budgetSeconds": 60}]
+
+
+def test_one_call_swallows_http_transport_and_body_failures():
     client = _ScriptedClient(
         [
-            _FakeResponse(
-                200,
-                {
-                    "processed": 50,
-                    "cached": 40,
-                    "empty": 0,
-                    "reciprocal": 5,
-                    "pruned": 1,
-                    "errors": 0,
-                },
-            ),
-            _FakeResponse(
-                200,
-                {
-                    "processed": 50,
-                    "cached": 30,
-                    "empty": 0,
-                    "reciprocal": 2,
-                    "pruned": 0,
-                    "errors": 1,
-                },
-            ),
-            _FakeResponse(
-                200,
-                {
-                    "processed": 0,
-                    "cached": 0,
-                    "empty": 0,
-                    "reciprocal": 0,
-                    "pruned": 0,
-                    "errors": 0,
-                },
-            ),
+            _FakeResponse(403),
+            requests.ConnectionError("refused"),
+            _FakeResponse(200, ["x"]),
         ]
     )
-    result = client.precompute_similar_cache_batches(
-        batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0, 0, 0])
-    )
-    assert result == {
-        "batches": 3,
-        "processed": 100,
-        "cached": 70,
-        "empty": 0,
-        "reciprocal": 7,
-        "pruned": 1,
-        "errors": 1,
-    }
-    assert client.calls == [{"limit": 50}, {"limit": 50}, {"limit": 50}]
+    assert [client.precompute(limit=5, budget_seconds=60) for _ in range(3)] == [
+        None,
+        None,
+        None,
+    ]
 
 
-def test_batches_stops_once_the_time_budget_elapses():
-    # Every batch is still full (processed == limit), i.e. the backlog is
-    # NOT drained — only the time budget makes the loop stop.
-    client = _ScriptedClient(
-        [
-            _FakeResponse(
-                200,
-                {
-                    "processed": 50,
-                    "cached": 50,
-                    "reciprocal": 0,
-                    "pruned": 0,
-                    "errors": 0,
-                },
-            ),
-            _FakeResponse(
-                200,
-                {
-                    "processed": 50,
-                    "cached": 50,
-                    "reciprocal": 0,
-                    "pruned": 0,
-                    "errors": 0,
-                },
-            ),
-        ]
-    )
-    # Clock ticks: 0 (start), 0 (< 10, loop), 5 (< 10, loop), 15 (>= 10, stop).
-    result = client.precompute_similar_cache_batches(
-        batch_limit=50, max_duration_seconds=10, _clock=_clock_from([0, 0, 5, 15])
-    )
-    assert result["batches"] == 2
-    assert result["processed"] == 100
-    assert client.calls == [{"limit": 50}, {"limit": 50}]
+def test_loops_until_done_and_sums_counters():
+    client = _ScriptedClient([_report(), _report(), _report(done=True, pending_left=0)])
+    totals = _until_done(client)
+    assert totals["calls"] == 3
+    assert totals["judged"] == 15
+    assert totals["done"] is True
+    assert totals["pending_left"] == 0
 
 
-def test_batches_stops_immediately_on_transport_failure_without_looping_forever():
-    client = _ScriptedClient([requests.ConnectionError("connection refused")])
-    result = client.precompute_similar_cache_batches(
-        batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0])
-    )
-    assert result == {
-        "batches": 0,
-        "processed": 0,
-        "cached": 0,
-        "empty": 0,
-        "reciprocal": 0,
-        "pruned": 0,
-        "errors": 0,
-    }
-    assert client.calls == [{"limit": 50}]
+def test_stops_when_a_call_makes_no_progress():
+    client = _ScriptedClient([_report(), _report(processed=0, throttled=3), _report()])
+    totals = _until_done(client)
+    assert totals["calls"] == 2
+    assert totals["done"] is False
+    assert totals["throttled"] == 3
 
 
-def test_batches_stops_when_every_question_errors():
-    # First batch: every attempted question errored out (errors == processed) —
-    # the anti-join would just re-select the same failing questions forever,
-    # so the loop must give up instead of spinning for the full time budget.
-    client = _ScriptedClient(
-        [
-            _FakeResponse(
-                200,
-                {
-                    "processed": 50,
-                    "cached": 0,
-                    "empty": 0,
-                    "reciprocal": 0,
-                    "pruned": 0,
-                    "errors": 50,
-                },
-            ),
-            _FakeResponse(
-                200,
-                {
-                    "processed": 50,
-                    "cached": 50,
-                    "empty": 0,
-                    "reciprocal": 0,
-                    "pruned": 0,
-                    "errors": 0,
-                },
-            ),
-        ]
-    )
-    result = client.precompute_similar_cache_batches(
-        batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0])
-    )
-    assert result == {
-        "batches": 1,
-        "processed": 50,
-        "cached": 0,
-        "empty": 0,
-        "reciprocal": 0,
-        "pruned": 0,
-        "errors": 50,
-    }
-    assert client.calls == [{"limit": 50}]
+def test_stops_and_flags_a_failed_call():
+    client = _ScriptedClient([_report(), _FakeResponse(403)])
+    totals = _until_done(client)
+    assert totals["failed"] is True
+    assert totals["calls"] == 1
 
 
-def test_batches_stops_when_a_batch_makes_no_progress_without_erroring():
-    # First batch: every attempted question was processed with NO error, and
-    # none produced a candidate worth caching NOR a tombstone (e.g. an older
-    # qe-front that doesn't report `empty` yet) — errors < processed, so the
-    # errors-based guard alone would miss this. cached == 0 AND empty == 0
-    # means the anti-join is unchanged either way, so the next batch would
-    # just re-select the exact same questions forever.
-    client = _ScriptedClient(
-        [
-            _FakeResponse(
-                200,
-                {
-                    "processed": 50,
-                    "cached": 0,
-                    "empty": 0,
-                    "reciprocal": 0,
-                    "pruned": 0,
-                    "errors": 0,
-                },
-            ),
-            _FakeResponse(
-                200,
-                {
-                    "processed": 50,
-                    "cached": 50,
-                    "empty": 0,
-                    "reciprocal": 0,
-                    "pruned": 0,
-                    "errors": 0,
-                },
-            ),
-        ]
-    )
-    result = client.precompute_similar_cache_batches(
-        batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0])
-    )
-    assert result == {
-        "batches": 1,
-        "processed": 50,
-        "cached": 0,
-        "empty": 0,
-        "reciprocal": 0,
-        "pruned": 0,
-        "errors": 0,
-    }
-    assert client.calls == [{"limit": 50}]
+def test_stops_at_the_time_budget_with_work_left():
+    client = _ScriptedClient([_report(), _report(), _report()])
+    totals = _until_done(client, clock=_clock_from([0, 0, 50, 150]), max_duration=100)
+    assert totals["calls"] == 2
+    assert totals["done"] is False
 
 
-def test_batches_keeps_going_when_a_batch_only_tombstones_empty_questions():
-    # First batch: every attempted question was genuinely empty (nothing
-    # to cache) and got tombstoned — cached == 0 but empty == 50, which is
-    # real progress: the anti-join now excludes those 50 questions, so the
-    # next batch selects a DIFFERENT set instead of repeating the same one.
-    # Unlike the cached-only check, this must NOT stop after one batch.
-    client = _ScriptedClient(
-        [
-            _FakeResponse(
-                200,
-                {
-                    "processed": 50,
-                    "cached": 0,
-                    "empty": 50,
-                    "reciprocal": 0,
-                    "pruned": 0,
-                    "errors": 0,
-                },
-            ),
-            _FakeResponse(
-                200,
-                {
-                    "processed": 0,
-                    "cached": 0,
-                    "empty": 0,
-                    "reciprocal": 0,
-                    "pruned": 0,
-                    "errors": 0,
-                },
-            ),
-        ]
-    )
-    result = client.precompute_similar_cache_batches(
-        batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0, 0])
-    )
-    assert result == {
-        "batches": 2,
-        "processed": 50,
-        "cached": 0,
-        "empty": 50,
-        "reciprocal": 0,
-        "pruned": 0,
-        "errors": 0,
-    }
-    assert client.calls == [{"limit": 50}, {"limit": 50}]
+def _load_job():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "precompute_similar.py"
+    spec = importlib.util.spec_from_file_location("precompute_similar", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def test_batches_treats_non_int_counters_as_zero_instead_of_raising():
-    # A malformed response body (e.g. a null field) must not raise inside
-    # the arithmetic — this call is best-effort, same contract as a
-    # transport failure.
-    client = _ScriptedClient(
-        [
-            _FakeResponse(
-                200,
-                {
-                    "processed": None,
-                    "cached": 3,
-                    "reciprocal": 0,
-                    "pruned": 0,
-                    "errors": 0,
-                },
-            ),
-        ]
+_ARGS = argparse.Namespace(limit=5, budget=60, max_duration=3600)
+
+
+def test_job_fails_when_qe_front_refuses_the_call():
+    assert _load_job().run(_ScriptedClient([_FakeResponse(403)]), _ARGS) == 1
+
+
+def test_job_fails_when_stuck_on_errors():
+    assert (
+        _load_job().run(_ScriptedClient([_report(processed=0, errors=4)]), _ARGS) == 1
     )
-    result = client.precompute_similar_cache_batches(
-        batch_limit=50, max_duration_seconds=1000, _clock=_clock_from([0, 0])
-    )
-    assert result == {
-        "batches": 1,
-        "processed": 0,
-        "cached": 3,
-        "empty": 0,
-        "reciprocal": 0,
-        "pruned": 0,
-        "errors": 0,
-    }
-    assert client.calls == [{"limit": 50}]
+
+
+def test_job_succeeds_when_done_or_out_of_time_with_progress():
+    job = _load_job()
+    assert job.run(_ScriptedClient([_report(done=True, pending_left=0)]), _ARGS) == 0
+    assert job.run(_ScriptedClient([_report(processed=0)]), _ARGS) == 0
+
+
+def test_job_exits_2_when_not_configured(monkeypatch):
+    job = _load_job()
+
+    class _Unconfigured:
+        qe_front_base_url = ""
+        qe_front_internal_token = ""
+
+    monkeypatch.setattr(job, "get_settings", lambda: _Unconfigured())
+    assert job.main() == 2

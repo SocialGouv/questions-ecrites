@@ -53,9 +53,9 @@ deploy:argocd:
     # three stay in lockstep by construction — migration-job.yaml silently
     # drifting out of this list is exactly what this pipeline was missing.
     - MANIFESTS="questions-ecrites/deployment.yaml questions-ecrites/cronjob-ingestion.yaml questions-ecrites/migration-job.yaml"
-    # Pins the same tag but is applied by hand and deleted afterwards, so its
-    # absence is normal and must not fail the deploy.
-    - OPTIONAL_MANIFESTS="questions-ecrites/job-an-backfill.yaml"
+    # Pin the same tag but may be absent: the backfill is applied by hand and
+    # deleted afterwards; the precompute CronJob lands in its own MR.
+    - OPTIONAL_MANIFESTS="questions-ecrites/job-an-backfill.yaml questions-ecrites/cronjob-precompute.yaml"
     - for f in $MANIFESTS; do test -f "$f" || { echo "$f not found in data-platform-argocd"; exit 1; }; done
     - 'for f in $OPTIONAL_MANIFESTS; do if [ -f "$f" ]; then MANIFESTS="$MANIFESTS $f"; else echo "absent, ignoré : $f"; fi; done'
     - sed -i -E "s|(image. pic-registry.sg.social.gouv.fr/socialgouv/data-ia/data-platform/questions-ecrites-back).*|\1:${CI_COMMIT_SHORT_SHA}|" $MANIFESTS
