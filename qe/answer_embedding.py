@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from itertools import batched
 
-from sqlalchemy import exists, select
+from sqlalchemy import Select, exists, select
 from sqlalchemy.orm import selectinload
 from tqdm import tqdm
 
@@ -39,8 +39,14 @@ class EmbedStats:
     deleted: int
 
 
-def _load_answers(source: str | None, legislature: int | None) -> list[Reponse]:
-    stmt = select(Reponse).options(selectinload(Reponse.questions))
+def _answers_stmt(
+    source: str | None, legislature: int | None
+) -> Select[tuple[Reponse]]:
+    # Linked questions are only needed for their id; loading their text
+    # columns dominated peak memory.
+    stmt = select(Reponse).options(
+        selectinload(Reponse.questions).load_only(Question.id)
+    )
     if source:
         stmt = stmt.where(Reponse.source == source)
     if legislature is not None:
@@ -50,8 +56,12 @@ def _load_answers(source: str | None, legislature: int | None) -> list[Reponse]:
                 Question.legislature == legislature,
             )
         )
+    return stmt
+
+
+def _load_answers(source: str | None, legislature: int | None) -> list[Reponse]:
     with db.get_session() as session:
-        return list(session.execute(stmt).scalars().all())
+        return list(session.execute(_answers_stmt(source, legislature)).scalars().all())
 
 
 def _load_all_answer_ids(source: str | None) -> set[str]:
