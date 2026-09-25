@@ -31,11 +31,12 @@ import zipfile
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 from xml.etree.ElementTree import Element
 
 from defusedxml.ElementTree import ParseError, fromstring
-from sqlalchemy import case, func, literal_column, select
+from sqlalchemy import Table, case, func, literal_column, or_, select
+from sqlalchemy.dialects.postgresql import Insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
@@ -163,6 +164,61 @@ def _get_or_create_ministere(
 # ---------------------------------------------------------------------------
 
 
+def _question_upsert() -> Insert:
+    """INSERT ... ON CONFLICT for one `questions` row, run executemany-style.
+
+    The conflict branch only fires when at least one column would actually
+    change: re-ingesting an unchanged row writes nothing (no new tuple, no
+    index churn, `updated_at` untouched).
+    """
+    insert_stmt = pg_insert(cast(Table, Question.__table__))
+    excluded = insert_stmt.excluded
+
+    def existing(col: str) -> ColumnElement[Any]:
+        return literal_column(f"questions.{col}")
+
+    set_: dict[str, ColumnElement[Any]] = {
+        # Never downgrade REPONDU -> EN_COURS
+        "etat_question": case(
+            (existing("etat_question") == "REPONDU", "REPONDU"),
+            else_=excluded.etat_question,
+        ),
+        # Preserve the original publication date if already set.
+        "date_publication_jo": func.coalesce(
+            existing("date_publication_jo"), excluded.date_publication_jo
+        ),
+        "page_jo": func.coalesce(existing("page_jo"), excluded.page_jo),
+        # Fill in texte_question if the existing value is empty.
+        "texte_question": func.coalesce(
+            func.nullif(existing("texte_question"), ""), excluded.texte_question
+        ),
+        # Static fields: update if incoming is not NULL
+        "objet": func.coalesce(excluded.objet, existing("objet")),
+        # Preserve existing reponse_id — once set it should not be
+        # overwritten by a re-ingest (guards against ID format drift).
+        "reponse_id": func.coalesce(existing("reponse_id"), excluded.reponse_id),
+        # SENAT-specific / enrichment fields: prefer existing non-NULL
+        # value so that WS-polling enrichment is not lost on re-ingest.
+        **{
+            col: func.coalesce(existing(col), excluded[col])
+            for col in (
+                "auteur_prenom",
+                "auteur_grp_pol",
+                "auteur_circonscription",
+                "titre_senat",
+                "themes",
+            )
+        },
+    }
+    # Compare the value each rule *resolves to*, not the incoming one.
+    changed = or_(*(existing(col).is_distinct_from(v) for col, v in set_.items()))
+    return insert_stmt.on_conflict_do_update(
+        index_elements=["id"],
+        set_={**set_, "updated_at": func.now()},
+        where=changed,
+    )
+
+
 def ingest_questions(
     questions: list[ParsedQuestion],
     *,
@@ -173,8 +229,10 @@ def ingest_questions(
     Conflict strategy on primary key `id`:
       - New questions         -> full INSERT
       - Already known         -> UPDATE response fields only
-        (etat_question, reponse_id, updated_at).
+        (etat_question, reponse_id, …), and only when one of them actually
+        changes; updated_at is bumped on those updates alone.
         Most fields (author, deposit date…) are preserved on conflict.
+      - Known reponses        -> left untouched (nothing on them is refreshed).
 
     Additional upsert guards:
       - etat_question is never downgraded: REPONDU stays REPONDU even if the
@@ -183,9 +241,9 @@ def ingest_questions(
         correct value is never overwritten by NULL.
       - texte_question uses COALESCE(NULLIF(existing, ''), incoming) so a
         question first inserted with empty text gets its text filled later.
-      - reponse_id uses COALESCE(incoming, existing) so a valid reponse_id
-        already in the DB is never cleared by a NULL.
-      - SENAT-specific fields use COALESCE(incoming, existing) so WS-polling
+      - reponse_id uses COALESCE(existing, incoming) so a valid reponse_id
+        already in the DB is never cleared or replaced.
+      - SENAT-specific fields use COALESCE(existing, incoming) so WS-polling
         enrichment is not overwritten by a subsequent dump re-ingest.
     """
     stats = IngestStats(questions_parsed=len(questions))
@@ -193,25 +251,39 @@ def ingest_questions(
         return stats
 
     with get_session() as session:
-        ministere_cache = _load_ministere_cache(session)
+        upsert_questions(session, questions, ingest_source, stats)
 
-        # --- upsert responses first (FK target must exist before questions) ---
-        seen_reponse_ids: set[str] = set()
-        for pq in questions:
-            if pq.reponse_id is None or pq.reponse_id in seen_reponse_ids:
-                continue
-            seen_reponse_ids.add(pq.reponse_id)
+    return stats
 
-            # Use the dedicated response ministry label when available (SENAT),
-            # otherwise fall back to the depot/attributaire label.
-            reponse_min_label = pq.ministre_reponse_libelle or pq.ministre_libelle
-            min_id_rep: int | None = None
-            if reponse_min_label:
-                min_id_rep = _get_or_create_ministere(
-                    session, reponse_min_label, ministere_cache, stats
-                )
 
-            rep_values = {
+def upsert_questions(
+    session: Session,
+    questions: list[ParsedQuestion],
+    ingest_source: str,
+    stats: IngestStats,
+) -> None:
+    """Body of ingest_questions, on a caller-owned session (no commit)."""
+    ministere_cache = _load_ministere_cache(session)
+
+    # --- insert responses first (FK target must exist before questions) ---
+    rep_rows: list[dict[str, Any]] = []
+    seen_reponse_ids: set[str] = set()
+    for pq in questions:
+        if pq.reponse_id is None or pq.reponse_id in seen_reponse_ids:
+            continue
+        seen_reponse_ids.add(pq.reponse_id)
+
+        # Use the dedicated response ministry label when available (SENAT),
+        # otherwise fall back to the depot/attributaire label.
+        reponse_min_label = pq.ministre_reponse_libelle or pq.ministre_libelle
+        min_id_rep: int | None = None
+        if reponse_min_label:
+            min_id_rep = _get_or_create_ministere(
+                session, reponse_min_label, ministere_cache, stats
+            )
+
+        rep_rows.append(
+            {
                 "id": pq.reponse_id,
                 "source": pq.source,
                 "no_publication": pq.no_publication,
@@ -221,25 +293,26 @@ def ingest_questions(
                 "date_reponse_jo": pq.date_reponse_jo,
                 "page_reponse_jo": pq.page_reponse_jo,
             }
-            rep_stmt = (
-                pg_insert(Reponse)
-                .values(**rep_values)
-                .on_conflict_do_update(
-                    index_elements=["id"],
-                    set_={"updated_at": func.now()},
-                )
+        )
+    if rep_rows:
+        session.execute(
+            pg_insert(cast(Table, Reponse.__table__)).on_conflict_do_nothing(
+                index_elements=["id"]
+            ),
+            rep_rows,
+        )
+
+    # --- upsert questions ---
+    rows: list[dict[str, Any]] = []
+    for pq in questions:
+        min_id: int | None = None
+        if pq.ministre_libelle:
+            min_id = _get_or_create_ministere(
+                session, pq.ministre_libelle, ministere_cache, stats
             )
-            session.execute(rep_stmt)
 
-        # --- upsert questions ---
-        for pq in questions:
-            min_id: int | None = None
-            if pq.ministre_libelle:
-                min_id = _get_or_create_ministere(
-                    session, pq.ministre_libelle, ministere_cache, stats
-                )
-
-            values: dict = {
+        rows.append(
+            {
                 "id": pq.id,
                 "numero_question": pq.numero_question,
                 "type": pq.type,
@@ -263,88 +336,13 @@ def ingest_questions(
                 "reponse_id": pq.reponse_id,
                 "ingest_source": ingest_source,
             }
-
-            insert_stmt = pg_insert(Question).values(**values)
-
-            # References to the existing row columns (the "target" side)
-            _existing: dict[str, ColumnElement[Any]] = {
-                col: literal_column(f"questions.{col}")
-                for col in (
-                    "etat_question",
-                    "date_publication_jo",
-                    "page_jo",
-                    "texte_question",
-                    "reponse_id",
-                    "auteur_prenom",
-                    "auteur_grp_pol",
-                    "auteur_circonscription",
-                    "titre_senat",
-                    "themes",
-                )
-            }
-
-            upsert_stmt = insert_stmt.on_conflict_do_update(
-                index_elements=["id"],
-                set_={
-                    # Never downgrade REPONDU -> EN_COURS
-                    "etat_question": case(
-                        (_existing["etat_question"] == "REPONDU", "REPONDU"),
-                        else_=insert_stmt.excluded.etat_question,
-                    ),
-                    # Preserve the original publication date if already set.
-                    "date_publication_jo": func.coalesce(
-                        _existing["date_publication_jo"],
-                        insert_stmt.excluded.date_publication_jo,
-                    ),
-                    "page_jo": func.coalesce(
-                        _existing["page_jo"],
-                        insert_stmt.excluded.page_jo,
-                    ),
-                    # Fill in texte_question if the existing value is empty.
-                    "texte_question": func.coalesce(
-                        func.nullif(_existing["texte_question"], ""),
-                        insert_stmt.excluded.texte_question,
-                    ),
-                    # Static fields: update if incoming is not NULL
-                    "objet": func.coalesce(
-                        insert_stmt.excluded.objet,
-                        literal_column("questions.objet"),
-                    ),
-                    # Preserve existing reponse_id — once set it should not be
-                    # overwritten by a re-ingest (guards against ID format drift).
-                    "reponse_id": func.coalesce(
-                        _existing["reponse_id"],
-                        insert_stmt.excluded.reponse_id,
-                    ),
-                    # SENAT-specific / enrichment fields: prefer existing non-NULL
-                    # value so that WS-polling enrichment is not lost on re-ingest.
-                    "auteur_prenom": func.coalesce(
-                        _existing["auteur_prenom"],
-                        insert_stmt.excluded.auteur_prenom,
-                    ),
-                    "auteur_grp_pol": func.coalesce(
-                        _existing["auteur_grp_pol"],
-                        insert_stmt.excluded.auteur_grp_pol,
-                    ),
-                    "auteur_circonscription": func.coalesce(
-                        _existing["auteur_circonscription"],
-                        insert_stmt.excluded.auteur_circonscription,
-                    ),
-                    "titre_senat": func.coalesce(
-                        _existing["titre_senat"],
-                        insert_stmt.excluded.titre_senat,
-                    ),
-                    "themes": func.coalesce(
-                        _existing["themes"],
-                        insert_stmt.excluded.themes,
-                    ),
-                    "updated_at": func.now(),
-                },
-            )
-            session.execute(upsert_stmt)
-            stats.questions_inserted += 1  # INSERT or UPDATE
-
-    return stats
+        )
+    # executemany, which psycopg pipelines (~one round trip per batch). Still
+    # one statement per row, in order: a duplicate id within the batch sees
+    # the row its first occurrence wrote, where one multi-VALUES statement
+    # would raise "cannot affect row a second time".
+    session.execute(_question_upsert(), rows)
+    stats.questions_inserted += len(rows)  # INSERT or UPDATE
 
 
 # ---------------------------------------------------------------------------
