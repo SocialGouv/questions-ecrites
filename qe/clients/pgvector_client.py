@@ -249,14 +249,22 @@ class PgvectorClient:
         filter: dict | None = None,
         with_vectors: bool = True,
         batch_size: int = 100,
+        payload_keys: Sequence[str] | None = None,
     ) -> list[dict]:
         """Return all points from the table, optionally filtered.
 
         batch_size is accepted for interface compatibility but ignored — a
         single SQL query is more efficient than paginated scrolling.
+
+        payload_keys restricts each payload to those top-level keys, read as
+        text in SQL; absent keys are omitted.
         """
         model = _resolve(collection)
-        cols = [model.id, model.payload]
+        key_cols = [
+            model.payload[key].astext.label(f"k{i}")
+            for i, key in enumerate(payload_keys or ())
+        ]
+        cols = [model.id, *key_cols] if payload_keys else [model.id, model.payload]
         if with_vectors:
             cols.append(model.vector)
         stmt = select(*cols)
@@ -268,7 +276,15 @@ class PgvectorClient:
             rows = session.execute(stmt).all()
         results = []
         for row in rows:
-            pt: dict = {"id": row.id, "payload": row.payload}
+            if payload_keys:
+                payload = {
+                    key: row[i + 1]
+                    for i, key in enumerate(payload_keys)
+                    if row[i + 1] is not None
+                }
+            else:
+                payload = row.payload
+            pt: dict = {"id": row.id, "payload": payload}
             if with_vectors:
                 pt["vector"] = list(row.vector)
             results.append(pt)

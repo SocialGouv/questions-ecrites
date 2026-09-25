@@ -270,7 +270,11 @@ def _load_existing_points(
     if not vector_store.collection_exists(collection):
         return {}
     logger.info("Loading existing points from collection '%s'...", collection)
-    points = vector_store.scroll_all(collection, with_vectors=False)
+    points = vector_store.scroll_all(
+        collection,
+        with_vectors=False,
+        payload_keys=("question_id", "embedding_model", "content_hash"),
+    )
     result: dict[str, tuple[str, str]] = {}
     for point in points:
         payload = point.get("payload", {})
