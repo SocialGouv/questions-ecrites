@@ -193,7 +193,7 @@ class Question(Base):
 
     # --- réponse (None tant que EN_COURS) ---
     reponse_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("reponses.id"), nullable=True
+        Text, ForeignKey("reponses.id"), nullable=True, index=True
     )
 
     # --- liens ---
@@ -316,7 +316,6 @@ class IngestCursor(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-
 
 
 # ---------------------------------------------------------------------------
