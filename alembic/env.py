@@ -66,8 +66,6 @@ _QE_FRONT_TABLES = {
     "bureaux",
     "question_real_attributions",
     "question_similar_suggestions",
-    "question_similar_cache",
-    "question_similar_precompute_empty",
     "question_similar_neighbors",
     "question_pair_rerank",
     "question_pair_verdict",
