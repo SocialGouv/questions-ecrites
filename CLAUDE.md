@@ -43,6 +43,7 @@ qe/                         # Main package (no __init__.py)
 scripts/
 ├── embed_questions.py                 # Embed questions from PostgreSQL into pgvector (vec_questions_opendata)
 ├── embed_answers.py                   # Embed answers from PostgreSQL into pgvector (vec_answers_opendata)
+├── precompute_similar.py              # Nightly: fill qe-front's /similar stage caches via its internal precompute route
 ├── find_similar_questions.py          # CLI: semantically similar questions/answers
 └── reset_dbs.py                       # Reset pgvector tables + PostgreSQL state
 

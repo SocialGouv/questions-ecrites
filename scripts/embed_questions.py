@@ -59,7 +59,6 @@ from qe.attributions import (
 )
 from qe.clients.embedding import EmbeddingClient
 from qe.clients.pgvector_client import PgvectorClient
-from qe.clients.qe_front_client import QeFrontClient
 from qe.clients.vector_store import VectorStore
 from qe.config import get_settings
 from qe.hashing import make_preview
@@ -75,16 +74,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_COLLECTION = "questions_opendata"
 DEFAULT_BATCH_SIZE = 32
-
-# Batched precompute against qe-front's similar-cache route (docs/llm-judge-
-# caching-plan.md Phase 2), synchronous at the end of the run. Looped in
-# PRECOMPUTE_BATCH_LIMIT-sized batches (matches that route's own DEFAULT_LIMIT)
-# until the backlog is drained or PRECOMPUTE_MAX_DURATION_SECONDS elapses, so
-# a day with hundreds of newly-EN_COURS questions — or the very first run,
-# backfilling every pre-existing EN_COURS question — gets fully caught up
-# instead of being capped at one batch.
-PRECOMPUTE_BATCH_LIMIT = 50
-PRECOMPUTE_MAX_DURATION_SECONDS = 1200  # 20 min — leaves room in the 1h ingestion job deadline
 
 # Server-side cursor page size for _iter_questions — independent of
 # --batch-size (the embedding API batch size). Only these columns are
@@ -318,7 +307,6 @@ def embed_questions(  # noqa: C901
     date_to: date | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     rate_limiter: TokenBucketRateLimiter | None = None,
-    qe_front_client: QeFrontClient | None = None,
 ) -> None:
     """Embed all matching questions from PostgreSQL into pgvector.
 
@@ -339,9 +327,6 @@ def embed_questions(  # noqa: C901
         date_to: If set, only embed questions published on or before this date.
         batch_size: Number of questions per embedding API call.
         rate_limiter: Optional global rate limiter (API calls/min).
-        qe_front_client: If set, drains the qe-front similar-cache precompute
-            backlog in batches at the end of the run (Phase 2). None = skip
-            (unconfigured).
     """
     existing = _load_existing_points(vector_store, collection)
 
@@ -501,22 +486,6 @@ def embed_questions(  # noqa: C901
     resync_direction_attribution_flags()
     resync_bureau_attribution_flags()
 
-    if qe_front_client is not None:
-        result = qe_front_client.precompute_similar_cache_batches(
-            batch_limit=PRECOMPUTE_BATCH_LIMIT,
-            max_duration_seconds=PRECOMPUTE_MAX_DURATION_SECONDS,
-        )
-        logger.info(
-            "qe-front precompute: %d batch(es), %d processed, %d cached, "
-            "%d reciprocal, %d pruned, %d errors.",
-            result["batches"],
-            result["processed"],
-            result["cached"],
-            result["reciprocal"],
-            result["pruned"],
-            result["errors"],
-        )
-
 
 def main() -> None:
     config = _parse_args()
@@ -530,16 +499,6 @@ def main() -> None:
     rate_limiter = (
         TokenBucketRateLimiter(rate_per_minute=config.rate_limit)
         if config.rate_limit
-        else None
-    )
-
-    settings = get_settings()
-    qe_front_client = (
-        QeFrontClient(
-            base_url=settings.qe_front_base_url,
-            token=settings.qe_front_internal_token,
-        )
-        if settings.qe_front_base_url and settings.qe_front_internal_token
         else None
     )
 
@@ -559,7 +518,6 @@ def main() -> None:
         date_to=config.date_to,
         batch_size=config.batch_size,
         rate_limiter=rate_limiter,
-        qe_front_client=qe_front_client,
     )
 
 
